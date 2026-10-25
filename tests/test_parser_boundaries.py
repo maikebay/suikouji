@@ -3,6 +3,7 @@ import contextlib
 import datetime as dt
 import itertools
 import unittest
+from unittest.mock import patch
 
 from engine import parser
 from engine.observe import ingest
@@ -24,6 +25,133 @@ class BoundaryTests(unittest.TestCase):
         for previous, current in zip(result['sales'], result['sales'][1:]):
             self.assertLessEqual(previous['end'], current['start'])
         return result
+
+    def test_daily_revenue_amount_can_continue_after_one_comma(self):
+        examples = (
+            ('营业额，只有1300', 1300),
+            ('今天的营业额很差，只有1300', 1300),
+            ('今天的营业额很差，只有1300。', 1300),
+            ('今天的营业额不好,仅有1300元', 1300),
+            ('今日营收很低，仅1300块', 1300),
+            ('昨天流水一般，才1300', 1300),
+            ('营业额不错，一共1300', 1300),
+            ('销售额很好，总共是1300元', 1300),
+            ('营收比较差，合计1300', 1300),
+            ('流水不多，总计是1300', 1300),
+            ('营业额很少，共计1300', 1300),
+            ('营业额有点差，共1300', 1300),
+            ('营业额很高，只有一千三百元', 1300),
+            ('营业额很差，只有1,300元', 1300),
+            ('营业额很差，只有1.3千', 1300),
+            ('营业额很差，只有1300.50元', 1300.5),
+        )
+        for text, amount in examples:
+            for extra_mask in (None, []):
+                with self.subTest(text=text, layered=extra_mask is not None):
+                    result = parser.parse(text, BASE, extra_mask=extra_mask)
+                    self.assertEqual([(e['type'], e['granularity'], e['amount'])
+                                      for e in result['entries']],
+                                     [('revenue', 'daily', amount)])
+                    self.assertEqual(result['raw'], text)
+                    self.assertEqual(result['sales'], [])
+                    self.assertEqual(result['leftovers'], [])
+
+    def test_revenue_continuation_keeps_local_dates_dimensions_and_sale_spans(self):
+        text = ('昨天美团外卖营业额很差，只有1300；'
+                '今天饿了么自取的销售额一般，合计1400；'
+                '牛肉面卖了2份20元；房租8000')
+        result = self.parse(text)
+        self.assertEqual([(e['date'], e['type'], e['amount'], e['platform'], e['channel'])
+                          for e in result['entries']],
+                         [('2026-10-23', 'revenue', 1300, '美团', '配送'),
+                          ('2026-10-24', 'revenue', 1400, '饿了么', '自取'),
+                          ('2026-10-24', 'expense', 8000, '', '')])
+        self.assertEqual([e['note'] for e in result['entries'][:2]], text.split('；')[:2])
+        sale = result['sales'][0]
+        self.assertEqual((sale['date'], sale['platform'], sale['channel'], sale['amount']),
+                         ('2026-10-24', '', '', 20))
+        self.assertEqual(text[sale['start']:sale['end']], '牛肉面卖了2份20元')
+        self.assertEqual(result['leftovers'], [])
+        inherited = self.parse('昨天房租8000；营业额很差，只有1300')
+        self.assertEqual([(e['date'], e['amount']) for e in inherited['entries']],
+                         [('2026-10-23', 8000), ('2026-10-23', 1300)])
+
+    def test_revenue_continuation_does_not_promote_nonassertions_or_ambiguous_amounts(self):
+        examples = (
+            '预计今天营业额很差，只有1300',
+            '今天营业额预计很差，只有1300',
+            '计划今天营业额很差，只有1300',
+            '今天营业额目标很低，只有1300',
+            '明天营业额很差，只有1300',
+            '2027年1月1日营业额很差，只有1300',
+            '明天房租8000；营业额很差，只有1300',
+            '如果今天营业额很差，只有1300',
+            '假如今天营业额很差，只有1300',
+            '如果下雨，今天营业额很差，只有1300',
+            '今天营业额会不会很差，只有1300',
+            '今天营业额很差，只有1300吗',
+            '今天营业额很差，只有1300？',
+            '今天营业额很差，只有1300?',
+            '今天营业额很差，只有1300！？',
+            '今天营业额很差，只有1300!?',
+            '今天营业额很差，只有1300!？',
+            '今天营业额很差，只有1300\n人',
+            '预计\n今天营业额很差，只有1300',
+            '今天营业额很差，只有1300\n还是1400？',
+            '今天营业额很差，只有1300元\n成本',
+            '今天没有营业额，只有1300',
+            '今天营业额不是很差，只有1300',
+            '今天营业额很差，不是只有1300',
+            '今天营业额很差，只有-1300',
+            '今天营业额很差，只有负一千三百',
+            '今天营业额很差，可能只有1300',
+            '今天营业额很差，大概只有1300',
+            '今天营业额很差，只有1300左右',
+            '今天营业额很差，只有1300或1400',
+            '今天营业额很差，只有1300/1400',
+            '今天营业额很差，只有1300到1400',
+            '今天营业额很差，只有1300 1400',
+            '今天营业额很差，只有1300，合计1400',
+            '今天营业额1200，只有1300',
+            '今天营业额很差，只有1300，错了是1400',
+            '今天营业额很差，只有1300元成本',
+            '今天营业额很差，只有1300元房租',
+            '今天营业额很差，只有1300元买了牛肉',
+            '今天营业额很差，房租只有1300',
+            '今天营业额和房租很差，只有1300',
+            '今天营业额很差，昨天只有1300',
+            '今天营业额很差，10月23日只有1300',
+            '今天营业额很差，只有1300昨天',
+            '今天营业额很差，美团只有1300',
+            '今天营业额很差，只有1300饿了么外卖',
+            '今天美团饿了么营业额很差，只有1300',
+            '今天营业额很差，只有1300人',
+            '今天营业额很差，只有1300单',
+            '今天营业额很差，只有1300份',
+            '今天营业额很差，只有1300桌',
+            '今天营业额很差，只有1300个',
+            '今天营业额很差，只有1300斤',
+            '今天营业额很差，只有一千三百人',
+            '今天营业额很差，只有1300元/单',
+            '今天营业额很差，只有1300客流10人',
+            '今天营业额很差，只有1300差评0个',
+            '今天营业额很差，1300',
+            '今天生意很差，只有1300',
+            '今天营业额很差。只有1300',
+            '今天营业额很差；只有1300',
+            '今天营业额很差、只有1300',
+            '今天营业额很差，，只有1300',
+        )
+        for text in examples:
+            with self.subTest(text=text):
+                result = parser.parse(text, BASE, extra_mask=[])
+                self.assertFalse(any(e['type'] == 'revenue' and e['granularity'] == 'daily'
+                                     and e['amount'] == 1300 for e in result['entries']), result)
+                self.assertTrue(result['leftovers'])
+                # 拒绝扩展的句子须保持旧路径结果；不在此修复旧的交易级分类语义。
+                with patch.object(parser, '_daily_revenue_continuations', return_value=iter(())):
+                    unchanged = parser.parse(text, BASE, extra_mask=[])
+                self.assertEqual(result, unchanged)
 
     def test_consecutive_quantity_first_sales(self):
         self.assert_sales('卖了30份牛肉面卖了20份炒饭',

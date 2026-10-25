@@ -39,7 +39,12 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CaptureRequest'}
       responses:
-        '200': {description: 'Terminal capture including parsed, partial, unparsed, rejected or needs_confirmation and its projections'}
+        '200':
+          description: >-
+            Terminal capture including parsed, partial, unparsed, rejected or needs_confirmation
+            and its projections. HTTP 200 does not imply a financial write: inspect entries/sales
+            and parsed.leftovers. A partial capture may contain successfully booked financial rows.
+            Preserve the original text; do not rewrite and resubmit to force parsing.
         '400': {$ref: '#/components/responses/Error'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
@@ -278,6 +283,98 @@ components:
         context: {type: string}
         intent: {type: string}
         profile_id: {type: string, description: Must match the workspace profile}
+        structured:
+          $ref: '#/components/schemas/AgentStructuredCapture'
+      description: >-
+        Preferred Agent flow: preserve text verbatim and supply structured data after
+        interpreting messy speech. Missing structured retains the legacy rule parser.
+        Explicit null or malformed structured is rejected and never falls back to parsing.
+        Normalized projections and original text commit once in the same transaction.
+    AgentStructuredCapture:
+      type: object
+      additionalProperties: false
+      required: [entries, sales, observations, leftovers]
+      description: >-
+        Caller Agent separates actual facts from forecasts, opinions and unknowns before
+        calling the tool. Restaurant profile only. At most 50 domain rows across all
+        three row arrays, and at most 50 leftovers. At least one row or leftover is
+        required. Every source_quote and leftover must occur verbatim in original text.
+        Evidence presence is checked; the tool does not prove the Agent's interpretation.
+      properties:
+        entries:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/AgentEntry'}
+        sales:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/AgentSale'}
+        observations:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/AgentObservation'}
+        leftovers:
+          type: array
+          maxItems: 50
+          items: {type: string, minLength: 1, maxLength: 2000}
+    AgentEntry:
+      type: object
+      additionalProperties: false
+      required: [date, type, category, amount, amount_basis, granularity, source_quote, assertion]
+      properties:
+        date: {type: string, format: date, description: Canonical YYYY-MM-DD; never default an invalid date to today}
+        type: {type: string, enum: [revenue, purchase, expense]}
+        category:
+          type: string
+          description: Revenue is 营业额; purchase is 食材成本; expense uses current controlled categories
+          enum: [营业额, 食材成本, 房租, 人工, 水电, 平台佣金, 包装耗材, 推广, 维修, 税费, 其他支出]
+        amount: {type: number, minimum: 0, maximum: 1000000000000}
+        amount_basis: {type: string, enum: [gross, settlement]}
+        granularity: {type: string, enum: [daily, transaction]}
+        source_quote: {type: string, minLength: 1, maxLength: 2000, description: Exact contiguous substring of original text}
+        assertion: {type: string, enum: [actual]}
+        item: {type: string, maxLength: 100}
+        qty: {type: number, minimum: 0, maximum: 1000000000000, description: Purchase only; paired with unit when present}
+        unit: {type: string, maxLength: 100}
+        period_month: {type: string, pattern: '^\d{4}-\d{2}$', description: Expense attribution month when explicitly known}
+        platform: {type: string, maxLength: 100}
+        channel: {type: string, maxLength: 100}
+    AgentSale:
+      type: object
+      additionalProperties: false
+      required: [date, product_name, qty, amount, unit, amount_basis, granularity, source_quote, assertion]
+      properties:
+        date: {type: string, format: date}
+        product_name: {type: string, minLength: 1, maxLength: 100, description: No leading or trailing whitespace}
+        qty: {type: number, minimum: 0, maximum: 1000000000000}
+        amount: {type: number, nullable: true, minimum: 0, maximum: 1000000000000, description: Null means unknown; never invent an amount}
+        unit: {type: string, minLength: 1, maxLength: 100}
+        amount_basis: {type: string, enum: [gross, settlement]}
+        granularity: {type: string, enum: [daily, transaction]}
+        source_quote: {type: string, minLength: 1, maxLength: 2000}
+        assertion: {type: string, enum: [actual]}
+        platform: {type: string, maxLength: 100}
+        channel: {type: string, maxLength: 100}
+        product_category: {type: string, maxLength: 100}
+    AgentObservation:
+      type: object
+      additionalProperties: false
+      required: [date, kind, measure, source_quote, assertion]
+      description: >-
+        Only existing nonfinancial observations: 客流人数/桌数; 订单单量;
+        天气天气; 排班出勤; 评价评分/差评数. Exactly one non-null value_num or
+        value_text; numeric facts use the corresponding count/rating unit.
+        Financial amounts and sales must use entries/sales, never observations.
+      properties:
+        date: {type: string, format: date}
+        kind: {type: string, enum: [客流, 订单, 天气, 排班, 评价]}
+        measure: {type: string, enum: [人数, 桌数, 单量, 天气, 出勤, 评分, 差评数]}
+        value_num: {type: number, minimum: 0, maximum: 1000000000000}
+        value_text: {type: string, minLength: 1, maxLength: 100}
+        unit: {type: string, maxLength: 100}
+        subject: {type: string, maxLength: 100}
+        source_quote: {type: string, minLength: 1, maxLength: 2000}
+        assertion: {type: string, enum: [actual]}
     ReviewResponse:
       type: object
       required: [review, duplicate]

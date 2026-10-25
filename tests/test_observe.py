@@ -53,6 +53,73 @@ class LayerTests(unittest.TestCase):
         self.assertEqual(visitors["occurred_at"], DAY)
         self.assertEqual(len(result["entry_ids"]), 2)
 
+    def test_weather_narrative_keeps_asserted_daily_revenue_once(self):
+        raw = ('今天是周末，但是天气不好，阴天，天气也越来越冷了。'
+               '外面还有跑马拉松的，可能影响生意。今天的营业额很差，只有1300。')
+        base = dt.date(2026, 10, 25)
+        result = observe.ingest(self.store, 's', raw, base=base, dedup_ref='weather-revenue')
+        self.assertEqual([(e['type'], e['amount']) for e in result['parsed']['entries']],
+                         [('revenue', 1300)])
+        self.assertEqual(len(result['entry_ids']), 1)
+        self.assertEqual(result['sale_ids'], [])
+        record = self.store.record_find('s', 'weather-revenue')
+        self.assertEqual((record['raw_text'], record['occurred_at']), (raw, '2026-10-25'))
+        rows = self.observations()
+        money = [o for o in rows if o['kind'] == '营业额']
+        self.assertEqual([(o['value_num'], o['occurred_at']) for o in money],
+                         [(1300, '2026-10-25')])
+        self.assertTrue(any(o['kind'] == '天气' for o in rows))
+        self.assertTrue(all(o['record_id'] == record['id'] for o in rows))
+        summary = self.store.summary('s', '2026-10-25', '2026-10-25')
+        self.assertEqual((summary['count'], summary['revenue'], summary['expense']), (1, 1300, 0))
+        self.assertEqual(result['status'], 'partial')
+        self.assertFalse(any('营业额' in s or '1300' in s for s in result['parsed']['leftovers']))
+        before = self.store.export_all('s')
+        duplicate = observe.ingest(self.store, 's', '营业额9999', base=base,
+                                   dedup_ref='weather-revenue')
+        self.assertTrue(duplicate['duplicate'])
+        self.assertEqual(self.store.export_all('s'), before)
+
+    def test_revenue_continuation_preserves_dates_scope_and_summary(self):
+        raw = ('  昨天美团外卖营业额很差，只有1300；'
+               '今天饿了么自取营业额一般，合计1400；今天下雨，客流10人  ')
+        result = self.ingest(raw, dedup_ref='revenue-scopes')
+        self.assertEqual(result['status'], 'parsed')
+        self.assertEqual(len(result['entry_ids']), 2)
+        self.assertEqual(result['sale_ids'], [])
+        record = self.store.record_find('s', 'revenue-scopes')
+        self.assertEqual(record['raw_text'], raw)
+        entries = self.store.list_entries('s', '0000', '9999')
+        self.assertEqual(sorted((e['date'], e['amount'], e['platform'], e['channel'])
+                                for e in entries),
+                         [('2026-10-22', 1300, '美团', '配送'),
+                          ('2026-10-23', 1400, '饿了么', '自取')])
+        rows = self.observations()
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(o['record_id'] == record['id'] for o in rows))
+        self.assertEqual(sorted((o['occurred_at'], o['value_num'])
+                                for o in rows if o['kind'] == '营业额'),
+                         [('2026-10-22', 1300), ('2026-10-23', 1400)])
+        summary = self.store.summary('s', '0000', '9999')
+        self.assertEqual((summary['count'], summary['revenue'], summary['expense']),
+                         (2, 2700, 0))
+
+    def test_revenue_continuation_does_not_cross_masked_observations(self):
+        for index, raw in enumerate((
+                '今天营业额很差，只有1300客流10人',
+                '今天营业额很差，只有1300差评0个',
+                '今天营业额很差，只有1300阴天',
+                '如果今天阴天，今天营业额很差，只有1300',
+                '今天营业额很差，只有1300吗？今天阴天')):
+            with self.subTest(raw=raw):
+                result = self.ingest(raw, dedup_ref='guard:' + str(index))
+                self.assertEqual(result['entry_ids'], [])
+                self.assertEqual(result['sale_ids'], [])
+                self.assertFalse(any(o['kind'] == '营业额' for o in result['observations']))
+                self.assertTrue(result['parsed']['leftovers'])
+                self.assertEqual(result['record']['raw_text'], raw)
+        self.assertEqual(self.store.summary('s', '0000', '9999')['count'], 0)
+
     def test_duplicate_message_and_legitimate_repetition(self):
         self.ingest("营业额1200，客流120人", dedup_ref="msg:1")
         duplicate = self.ingest("营业额9999", dedup_ref="msg:1")

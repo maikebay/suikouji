@@ -6,6 +6,7 @@ engine/**
 !engine/__init__.py
 !engine/accounting.py
 !engine/agent_service.py
+!engine/agent_normalization.py
 !engine/backup.py
 !engine/capabilities.py
 !engine/cli.py

@@ -101,6 +101,23 @@ class ProfileAndCapabilityTests(unittest.TestCase):
         self.assertEqual(by_id["wechat.personal"]["status"], "unsupported")
         self.assertTrue(any("实际发生" in item for item in contract["agent_policy"]["never_guess"]))
         self.assertTrue(any(p["id"] == "restaurant" for p in contract["profiles"]))
+        preparation = contract["agent_policy"]["input_preparation"]
+        self.assertTrue(preparation["user_speech_may_be_messy"])
+        self.assertEqual(preparation["responsible_party"], "calling_agent")
+        self.assertEqual(preparation["preferred_payload_field"], "structured")
+        self.assertTrue(preparation["preserve_verbatim_text"])
+        self.assertEqual(by_id["capture.structured"]["status"], "available")
+        ilink = contract["agent_policy"]["ilink_integration"]
+        self.assertFalse(ilink["builtin_worker_uses_llm"])
+        self.assertTrue(ilink["single_poller_per_bot_account"])
+        self.assertTrue(ilink["external_agent_should_keep_builtin_worker_disabled"])
+        result_policy = contract["agent_policy"]["capture_result_policy"]
+        self.assertFalse(result_policy["http_200_means_financial_write"])
+        self.assertEqual(result_policy["report_financial_rows_from"], ["entries", "sales"])
+        self.assertEqual(result_policy["report_unparsed_fragments_from"], "parsed.leftovers")
+        self.assertTrue(result_policy["partial_may_include_financial_rows"])
+        self.assertTrue(result_policy["preserve_original_text"])
+        self.assertTrue(result_policy["do_not_rewrite_and_resubmit_to_force_parsing"])
 
 
 class FoundationHttpTests(unittest.TestCase):
