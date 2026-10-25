@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f7f2e8">
+<title>随口记 · 试记一本生意账</title>
+<style>
+:root{color-scheme:light;--paper:#f7f2e8;--surface:#fffdf9;--ink:#30271f;--muted:#756858;--line:#ded4c2;--accent:#a74422;--green:#306344;--soft:#efe6d7;--danger:#a33024}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.65 "PingFang SC","Microsoft YaHei",sans-serif}button,textarea{font:inherit}button{cursor:pointer;color:inherit}button:disabled{cursor:wait;opacity:.6}button:focus-visible,a:focus-visible{outline:3px solid #537b9c;outline-offset:4px}header,main,footer{max-width:1240px;margin:auto;padding-left:44px;padding-right:44px}header{display:flex;justify-content:space-between;align-items:center;padding-top:25px;padding-bottom:22px;border-bottom:1px solid var(--line)}.brand{display:flex;align-items:center;gap:12px}.seal{background:var(--accent);color:#fff;border-radius:8px;padding:3px 10px;font-family:"Kaiti SC",STKaiti,serif;font-size:26px;line-height:1.5}.brand strong{font-size:19px;letter-spacing:1px}.brand small{display:block;color:var(--muted);font-size:12px}.connection{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}.dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}.online .dot{background:var(--green)}main{display:grid;grid-template-columns:minmax(280px, .85fr) minmax(0,1.25fr);gap:52px;padding-top:42px;padding-bottom:40px}.intro h1{font:500 clamp(30px,3vw,39px)/1.45 "Songti SC",STSong,serif;letter-spacing:1px;margin:0 0 14px}.intro p{color:var(--muted);margin:0 0 25px;max-width:28em}.input-label{display:block;font-size:13px;font-weight:600;margin-bottom:9px}.input-box{background:var(--surface);border:1px solid #bcae99;border-radius:12px;overflow:hidden;transition:border-color .15s}.input-box:focus-within{outline:2px solid var(--accent);outline-offset:2px}textarea{display:block;width:100%;min-height:156px;resize:vertical;border:0;outline:none;background:none;padding:18px;color:var(--ink);line-height:1.8}textarea::placeholder{color:#8a7d6c}.input-bottom{display:flex;align-items:center;justify-content:space-between;padding:0 12px 12px;gap:12px}.keyboard{font-size:11px;color:var(--muted);padding-left:6px}.primary{border:0;border-radius:7px;padding:10px 23px;background:var(--accent);color:#fff;font-weight:600}.primary:hover{background:#8b351b}.examples{margin-top:23px}.examples p{font-size:12px;color:var(--muted);margin:0 0 9px}.example-row{display:flex;flex-wrap:wrap;gap:8px}.example{background:transparent;border:1px solid #cbbda8;border-radius:20px;padding:5px 12px;font-size:12px}.example:hover{background:var(--soft)}.full-example{border:0;background:none;padding:12px 0;color:var(--accent);font-size:13px;text-decoration:underline;text-underline-offset:4px}.feedback{margin-top:20px;padding:15px 17px;border-left:3px solid var(--green);background:#eaf0e6;font-size:13px;overflow-wrap:anywhere}.feedback[data-tone=warning]{border-color:#9e711d;background:#f6ecd4}.feedback[data-tone=error]{border-color:var(--danger);background:#f7e6df}.feedback p{margin:5px 0 0}.feedback[hidden]{display:none}.note{font-size:12px;color:var(--muted);margin-top:25px;max-width:32em}.book{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:4px 15px 15px 4px;box-shadow:5px 5px 0 #eae1d1;align-self:start;min-height:520px}.book-head{padding:23px 24px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:start;gap:10px}.book-head h2{font-size:19px;margin:0 0 3px;font-weight:600}.book-head p{font-size:12px;color:var(--muted);margin:0}.refresh{background:none;border:1px solid var(--line);border-radius:6px;padding:4px 10px;font-size:12px}.tabs{display:flex;border-bottom:1px solid var(--line);padding:0 20px;gap:21px}.tab{position:relative;border:0;background:none;font-size:13px;padding:15px 0 12px;white-space:nowrap;color:var(--muted)}.tab[aria-selected=true]{color:var(--accent);font-weight:600}.tab[aria-selected=true]::after{content:"";position:absolute;height:3px;background:var(--accent);bottom:0;left:0;right:0}.pane{padding:20px 24px}.pane[hidden]{display:none}.caption{font-size:12px;color:var(--muted);margin:0 0 15px}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px;text-align:left}th{color:var(--muted);font-weight:500;font-size:11px;white-space:nowrap}td,th{padding:12px 10px 12px 0;border-bottom:1px solid #eee7db}td{vertical-align:top;overflow-wrap:anywhere}td:last-child,th:last-child{text-align:right;padding-right:0;white-space:nowrap;font-variant-numeric:tabular-nums}.date{font-size:11px;color:var(--muted);white-space:nowrap}.empty{padding:45px 0 55px;text-align:center}.empty-symbol{font:38px/1.5 "Songti SC",serif;color:#c6b8a2;display:block}.empty strong{font-size:15px;font-weight:500}.empty p{font-size:12px;color:var(--muted);margin:8px 0}.ledger-note{font-size:12px;color:var(--muted);margin:20px 0 0;line-height:1.9}.source{padding:13px 0 18px;border-bottom:1px solid #eee7db}.source-meta{display:flex;justify-content:space-between;gap:10px;margin-bottom:8px;font-size:11px;color:var(--muted)}.source blockquote{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8;font-size:14px}.status{color:var(--green)}.status.pending{color:#926417}.loading{padding:40px;text-align:center;color:var(--muted);font-size:13px}footer{padding-top:16px;padding-bottom:28px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:12px}footer span:last-child{text-align:right}#startup{margin:0 0 15px;font-size:13px;color:var(--danger)}
+@media(max-width:900px){header,main,footer{padding-left:24px;padding-right:24px}main{gap:28px;grid-template-columns:minmax(250px,.9fr) minmax(0,1.1fr)}.pane{padding:16px}.tabs{gap:15px;padding:0 16px}.book-head{padding:20px 16px}}
+@media(max-width:680px){header{padding-top:16px;padding-bottom:16px}.brand small{display:none}.connection{font-size:11px}main{grid-template-columns:1fr;padding-top:25px;gap:30px}.intro h1{font-size:30px}.intro p{margin-bottom:20px}.note{margin-top:14px}.book{min-height:380px}.empty{padding:30px 0}.keyboard{font-size:10px}footer{flex-direction:column;gap:3px}footer span:last-child{text-align:left}td{font-size:12px}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+input,select{font:inherit;max-width:100%;background:var(--surface);color:var(--ink);border:1px solid #bcae99;border-radius:5px;padding:7px}input:focus-visible,select:focus-visible{outline:2px solid var(--accent)}.fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.fields label{font-size:12px}.fields input{display:block;width:100%;margin-top:4px}.setup{margin-top:25px;border-top:1px solid var(--line);padding-top:16px}.setup summary{cursor:pointer;font-weight:600}.setup textarea{border:1px solid var(--line);border-radius:6px;min-height:100px;margin:12px 0}.tabs{overflow-x:auto;gap:16px}.cost-item{padding:16px 0;border-bottom:1px solid var(--line)}.cost-item h3{font-size:16px;margin:0 0 8px}.cost-item p{font-size:12px;color:var(--muted)}.month-filter{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:15px;font-size:12px}#import-preview{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}main{grid-template-columns:minmax(280px,.8fr) minmax(0,1.4fr)}@media(max-width:680px){main{grid-template-columns:1fr}.fields{grid-template-columns:1fr 1fr}}
+.badge{display:inline-block;min-width:18px;padding:0 5px;margin-left:5px;border-radius:9px;background:var(--accent);color:#fff;font-size:11px;line-height:17px;text-align:center;vertical-align:1px}
+.feedback[data-tone=result]{border-left-color:var(--accent);background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent)}
+.result-row{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:7px 0;border-top:1px solid #eee7db}.result-row:first-of-type{border-top:0;margin-top:6px}.result-row .what{flex:1;min-width:0}.result-row .amount{font-variant-numeric:tabular-nums;white-space:nowrap}.result-row time{font-size:11px;color:var(--muted)}
+.review-item{padding:15px 0;border-bottom:1px solid #eee7db}.review-item h3{font-size:15px;margin:0 0 6px;font-weight:600}.review-meta{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--muted);margin-bottom:6px}
+.reasons{margin:0 0 10px;padding-left:18px;font-size:12px;color:#926417}.reasons li{margin:2px 0}
+.known{font-size:12px;color:var(--muted)}
+.editor{margin:14px 0 0;border:1px solid var(--line);border-radius:8px;background:var(--paper);padding:15px}.editor-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:8px}
+.field-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin:12px 0}.field-grid label{font-size:12px;color:var(--muted)}.field-grid input,.field-grid select{display:block;width:100%;margin-top:3px}.field-grid .missing{color:#926417;font-weight:600}
+.editor-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ghost{border:1px solid var(--line);background:var(--surface);border-radius:6px;padding:5px 11px;font-size:12px}.ghost:hover{background:var(--soft)}
+.editor-note{font-size:12px;margin:10px 0 0}.editor-note[data-tone=error]{color:var(--danger)}
+.history{font-size:12px;color:var(--muted);margin-top:9px}.history summary{cursor:pointer}.history ul{margin:6px 0 0;padding-left:18px}
+#review-editor[hidden]{display:none}@media(max-width:680px){.field-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="brand"><span class="seal" aria-hidden="true">记</span><div><strong>随口记</strong><small>把每天的生意，慢慢记清楚</small></div></div><div class="connection" id="connection"><span class="dot"></span><span id="connection-text">正在连接</span></div></header>
+<main>
+<section class="intro" aria-labelledby="headline">
+<h1 id="headline">今天的生意，<br>随口记两句。</h1>
+<p>买了什么、卖了多少、来了几位客人。<br>你说一句，这里帮你分开记好。</p>
+<p id="startup" hidden></p>
+<form id="record-form">
+<label class="input-label" for="message">记点什么</label>
+<div class="input-box"><textarea id="message" name="message" maxlength="2000" required placeholder="比如：今天营业额1280，买了50斤牛肉花了680，客流120人，下雨"></textarea><div class="input-bottom"><span class="keyboard">⌘ / Ctrl + Enter 也可以记录</span><button class="primary" id="submit" type="submit">记下来</button></div></div>
+</form>
+<div class="examples"><p>没有想好？点一个例子试试</p><div class="example-row"><button class="example" data-example="今天营业额1280">记营业额</button><button class="example" data-example="今天买了50斤牛肉花了680">记进货</button><button class="example" data-example="今天客流120人，下雨">记客流与天气</button><button class="example" data-example="小王今天请假，评分4.8">记排班与评分</button></div><button class="full-example" id="fill-example">填入一条完整示例</button></div>
+<div class="feedback" id="feedback" role="status" aria-live="polite" hidden></div>
+<p class="note">记录保存在这台电脑。每天的营业总额和销售明细会相互核对，不会直接相加。同日同范围多条总额采用最后一条，并提示核对。</p>
+<details class="setup"><summary>设置商品与配方</summary>
+<p class="caption">填写一份或一锅的完整原料用量，再注明能做几份。进价来自你记下的采购。</p>
+<form id="recipe-form"><div class="fields">
+<label>商品<input name="product" required placeholder="牛肉面"></label><label>商品品类<input name="category" placeholder="面食"></label>
+<label>标价（元，可不填）<input name="price" type="number" min="0" step="0.01"></label><label>配方产出（份）<input name="units" type="number" value="1" min="0.001" step="any" required></label>
+<label>配方生效日期<input name="effective_date" type="date" required></label></div>
+<label class="input-label" for="recipe-text">原料和用量</label><textarea id="recipe-text" name="recipe" required placeholder="牛肉80克，面条120克"></textarea><button class="primary" type="submit">保存配方</button><p id="recipe-feedback" role="status"></p></form></details>
+<details class="setup"><summary>导入销售或费用 CSV</summary><p class="caption">先预览，再确认入账。没有明细ID的销售按“日期＋平台＋渠道＋商品”日汇总处理；不能与交易明细重叠。</p><label for="csv-file">选择 CSV 文件</label><input type="file" id="csv-file" accept=".csv,text/csv"><textarea id="csv-text" aria-label="CSV 内容" placeholder="日期,平台,渠道,商品品类,商品,数量,销售额&#10;2026-10-23,美团,配送,面食,牛肉面,30,360"></textarea><button type="button" class="refresh" id="preview-import">预览导入</button> <button type="button" class="primary" id="commit-import" disabled>确认导入</button><div id="import-preview" role="status"></div></details>
+</section>
+<section class="book" aria-labelledby="book-title"><div class="book-head"><div><h2 id="book-title">我的试记账本</h2><p id="book-date">本地保存 · 全部试记数据</p></div><button class="refresh" id="refresh" type="button">刷新</button></div>
+<div class="tabs" role="tablist" aria-label="查看记录"><button class="tab" id="tab-ledger" type="button" role="tab" aria-controls="ledger" aria-selected="true" data-pane="ledger">账目明细</button><button class="tab" id="tab-review" type="button" role="tab" aria-controls="review" aria-selected="false" tabindex="-1" data-pane="review">待核对</button><button class="tab" id="tab-observations" type="button" role="tab" aria-controls="observations" aria-selected="false" tabindex="-1" data-pane="observations">经营信息</button><button class="tab" id="tab-sources" type="button" role="tab" aria-controls="sources" aria-selected="false" tabindex="-1" data-pane="sources">原话记录</button><button class="tab" id="tab-analysis" type="button" role="tab" aria-controls="analysis" aria-selected="false" tabindex="-1" data-pane="analysis">销售与月账</button><button class="tab" id="tab-costs" type="button" role="tab" aria-controls="costs" aria-selected="false" tabindex="-1" data-pane="costs">配方成本</button></div>
+<div class="pane" id="ledger" role="tabpanel" aria-labelledby="tab-ledger"><p class="loading">正在读取账本…</p></div>
+<div class="pane" id="review" role="tabpanel" aria-labelledby="tab-review" hidden><div id="review-body"></div><div id="review-editor" hidden></div></div>
+<div class="pane" id="observations" role="tabpanel" aria-labelledby="tab-observations" hidden></div>
+<div class="pane" id="sources" role="tabpanel" aria-labelledby="tab-sources" hidden></div>
+<div class="pane" id="analysis" role="tabpanel" aria-labelledby="tab-analysis" hidden><div class="month-filter"><label for="month">查看月份</label><input type="month" id="month"><button class="refresh" id="all-months" type="button">全部</button></div><div id="analysis-content"></div></div>
+<div class="pane" id="costs" role="tabpanel" aria-labelledby="tab-costs" hidden></div>
+</section>
+</main>
+<footer><span>随口记录，认真算账。</span><span>本地测试版 · 记录保存在这台电脑上</span></footer>
+<script>
+'use strict';
+const $ = selector => document.querySelector(selector);
+const labels = {revenue:'营业额',purchase:'进货',expense:'支出'};
+const statuses = {parsed:'已整理',partial:'部分待补充',unparsed:'待识别',pending:'待重试',legacy_structured:'历史数据',correction:'补充与修正'};
+const money = value => value==null?'待补充':Number(value).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
+const precise = value => value==null?'待补充':Number(value).toLocaleString('zh-CN',{maximumFractionDigits:6});
+// 补充与修正：字段名、可选值和填写顺序，跟后端 review 接口一一对应。
+const FIELD_LABELS = {date:'日期',type:'类型',category:'分类',item:'名称',amount:'金额（元）',qty:'数量',unit:'单位',period_month:'费用归属月份',platform:'平台',channel:'渠道',amount_basis:'金额口径',granularity:'记录粒度',product_name:'商品',product_category:'商品品类'};
+const EDIT_FIELDS = {entry:['date','type','category','item','amount','qty','unit','period_month','platform','channel','amount_basis','granularity'],sale:['date','product_name','product_category','qty','amount','unit','platform','channel','amount_basis','granularity']};
+const CHOICES = {type:{revenue:'营业额',purchase:'进货',expense:'支出'},amount_basis:{gross:'商品销售额 / 付款',settlement:'结算实收（已扣平台费）'},granularity:{daily:'当日合计',transaction:'逐笔交易'}};
+let pending = null;
+let busy = false;
+let connected = false;
+let editing = null;
+let editRequestId = null;
+let reviewNote = null;
+let written = [];
+let writtenStale = false;
+let lastState = null;
+function node(tag,text,className){const element=document.createElement(tag);if(text!==undefined)element.textContent=text;if(className)element.className=className;return element;}
+function notice(title,body='',tone='success'){const box=$('#feedback');box.replaceChildren(node('strong',title));if(body)box.append(node('p',body));box.dataset.tone=tone;box.hidden=false;}
+function connection(ok){connected=ok;$('#connection').classList.toggle('online',ok);$('#connection-text').textContent=ok?'本地已连接':'连接未就绪';$('#submit').disabled=busy||!ok;}
+async function api(path, options={}){const response=await fetch(path,{...options,signal:AbortSignal.timeout(15000)});const payload=await response.json();if(!response.ok)throw new Error(payload.error||'请求失败，请重试。');return payload;}
+function empty(target,title,body){const box=node('div',undefined,'empty');box.append(node('span','记','empty-symbol'),node('strong',title),node('p',body));target.append(box);}
+function table(target,headings,rows){const wrap=node('div',undefined,'table-wrap');const table=node('table');const head=node('thead');const tr=node('tr');headings.forEach(text=>tr.append(node('th',text)));head.append(tr);table.append(head);const body=node('tbody');for(const values of rows){const row=node('tr');values.forEach((text,index)=>{const cell=node('td',undefined,index===0?'date':'');if(text instanceof Node)cell.append(text);else cell.textContent=text;row.append(cell);});body.append(row);}table.append(body);wrap.append(table);target.append(wrap);}
+function rowSummary(kind,row){
+ if(kind==='sale')return `销量 · ${row.product_name||'未写商品'}${row.qty!=null?' '+precise(row.qty)+(row.unit||'份'):''}`;
+ return `${labels[row.type]||row.type} · ${row.item||row.category||'未写名称'}${row.qty!=null?' '+precise(row.qty)+(row.unit||''):''}${row.period_month?'（归属 '+row.period_month+'）':''}`;
+}
+// 把一行账目变成可编辑对象：字段名与后端允许修正的集合一致。
+function targetOf(kind,row){
+ const fields={};
+ for(const name of EDIT_FIELDS[kind])fields[name]=row[name]==null?'':row[name];
+ return {id:kind+':'+row.id,kind,label:row.item||row.product_name||row.category||'（未写名称）',fields,missing:[]};
+}
+function fixButton(target){const button=node('button','修正','ghost');button.type='button';button.addEventListener('click',()=>openEditor(target));return button;}
+// 待核对清单里同一行的缺口，用来在编辑器里标出先填哪个。
+function reviewTarget(data,kind,row){const target=targetOf(kind,row);const item=((data&&data.review)||[]).find(entry=>entry.id===target.id);if(item)target.missing=item.missing;return target;}
+function showValue(key,value){if(value==null||value==='')return '空';return (CHOICES[key]||{})[value]||String(value);}
+function describeChange(change){const parts=Object.keys(change.after).map(key=>`${FIELD_LABELS[key]||key} ${showValue(key,change.before[key])}→${showValue(key,change.after[key])}`);for(const key of Object.keys(change.side_effects||{})){if(key==='product_id')continue;parts.push(`${FIELD_LABELS[key]||key}随之一并改为「${showValue(key,change.side_effects[key].after)}」`);}return parts.join('；');}
+function historyBlock(history){const details=node('details',undefined,'history');details.append(node('summary',`改过 ${history.length} 次`));const list=node('ul');for(const change of history)list.append(node('li',`${change.created_at.slice(0,16).replace('T',' ')} ${describeChange(change)}｜依据：${change.raw_text}`));details.append(list);return details;}
+// 修正历史由服务端按行给（data.corrections）：原话列表只留最近 100 条，不能拿它算。
+function clientHistory(data,target){return ((data&&data.corrections)||{})[target]||[];}
+// 原话列表里标出这条补充/修正改的是哪一行。
+function correctionTarget(data,target){const [kind,rowId]=String(target).split(':');const rows=(kind==='sale'?data.sales:data.entries)||[];const row=rows.find(r=>r.id===rowId);return row?`${row.date} ${rowSummary(kind,row)}`:'原记录已撤销或不在当前范围';}
+function reviewItem(item){
+ const box=node('article',undefined,'review-item');const meta=node('div',undefined,'review-meta');
+ meta.append(node('span',`${item.date} · ${item.kind==='sale'?'销量':'账目'}`),node('span','¥ '+money(item.amount)));
+ box.append(node('h3',item.label),meta);
+ const list=node('ul',undefined,'reasons');for(const reason of item.reasons)list.append(node('li',reason));
+ box.append(list);
+ const actions=node('div',undefined,'editor-actions');
+ actions.append(fixButton({id:item.id,kind:item.kind,label:item.label,fields:{...item.fields},missing:item.missing||[]}),node('span','当前：'+rowSummary(item.kind,item.fields),'known'));
+ box.append(actions);
+ if(item.history.length)box.append(historyBlock(item.history));
+ return box;
+}
+function renderReview(data){
+ const items=(data&&data.review)||[];
+ const tab=$('#tab-review');tab.replaceChildren(node('span','待核对'));if(items.length)tab.append(node('span',String(items.length),'badge'));
+ const body=$('#review-body');body.replaceChildren();
+ body.append(node('p','这里只列会影响算账的缺口：采购缺数量、费用缺归属月份、销量缺金额或平台。补上以后写回原来那条记录，不新增账目，旧值和依据都留档。','caption'));
+ if(reviewNote){const note=node('p',reviewNote.text,'editor-note');if(reviewNote.tone)note.dataset.tone=reviewNote.tone;body.append(note);}
+ if(!items.length)empty(body,'没有待核对的事项','数量、费用月份、平台都齐了，算出来的数才有依据。');
+ for(const item of items)body.append(reviewItem(item));
+ renderEditor();
+}
+function choiceInput(name,value){const select=node('select');for(const [key,text] of Object.entries(CHOICES[name])){const option=node('option',text);option.value=key;select.append(option);}select.value=value||Object.keys(CHOICES[name])[0];return select;}
+function fieldLabel(name,value,missing){
+ const label=node('label',FIELD_LABELS[name]||name);
+ if(missing)label.append(node('span','（缺）','missing'));
+ let input;
+ if(CHOICES[name])input=choiceInput(name,value);
+ else{input=node('input');if(name==='date'||name==='period_month')input.type=name==='date'?'date':'month';else if(name==='amount'||name==='qty'){input.type='number';input.step='any';input.min='0';}else{input.type='text';input.maxLength=100;}input.value=value==null?'':value;}
+ input.name=name;input.id='edit-'+name;label.htmlFor=input.id;label.append(input);
+ return label;
+}
+function renderEditor(){
+ const box=$('#review-editor');box.replaceChildren();
+ if(!editing){box.hidden=true;return;}
+ box.hidden=false;
+ const form=node('form',undefined,'editor');const head=node('div',undefined,'editor-head');
+ head.append(node('strong','补充或修正：'+editing.label),node('span',editing.id,'date'));
+ form.append(head,node('p','只提交改动过的字段。保存后写回这一条原记录，原话、旧值和这次依据都留着。','caption'));
+ const grid=node('div',undefined,'field-grid');
+ for(const name of EDIT_FIELDS[editing.kind])grid.append(fieldLabel(name,editing.fields[name],editing.missing.includes(name)));
+ form.append(grid);
+ const reason=node('label','这次改动的依据（会作为一条原话存下来）');
+ const reasonInput=node('input');reasonInput.id='edit-reason';reasonInput.name='reason';reasonInput.required=true;reasonInput.maxLength=500;
+ reasonInput.value=editing.missing.length?`补充${editing.label}的缺失信息`:`修正${editing.label}`;
+ reason.htmlFor=reasonInput.id;reason.append(reasonInput);form.append(reason);
+ const actions=node('div',undefined,'editor-actions');
+ const save=node('button','保存并写回','primary');save.type='submit';
+ const cancel=node('button','取消','ghost');cancel.type='button';
+ cancel.addEventListener('click',()=>{editing=null;editRequestId=null;renderEditor();});
+ actions.append(save,cancel);form.append(actions);
+ const note=node('p','','editor-note');note.id='editor-note';form.append(note);
+ if(editing.history&&editing.history.length)form.append(historyBlock(editing.history));
+ form.addEventListener('submit',event=>submitReview(event,form,save));
+ box.append(form);
+}
+function editorNote(text,tone){const note=$('#editor-note');if(!note)return;note.textContent=text;note.dataset.tone=tone||'';}
+function sameValue(name,value,original){
+ if(name==='amount'||name==='qty'){const a=value===''?null:Number(value);const b=original==null||original===''?null:Number(original);return a===b;}
+ return value===String(original==null?'':original);
+}
+function openEditor(target){editing=target;editRequestId=null;reviewNote=null;if(!editing.history)editing.history=clientHistory(lastState,editing.id);renderReview(lastState);selectPane('review');const first=target.missing[0];const input=first&&$('#edit-'+first);if(input)input.focus();}
+async function submitReview(event,form,save){
+ event.preventDefault();if(busy||!editing)return;
+ const values=Object.fromEntries(new FormData(form));
+ const fields={};
+ for(const name of EDIT_FIELDS[editing.kind]){
+  const raw=values[name]==null?'':String(values[name]);
+  if(sameValue(name,raw,editing.fields[name]))continue;
+  if(name==='amount'||name==='qty'){
+   if(raw===''){fields[name]=null;continue;}
+   const number=Number(raw);
+   // 「1e309」这类输入 Number() 得到 Infinity，JSON.stringify 会写成 null，
+   // 后端把 null 当「清空这个字段」——金额就被悄悄删掉了。
+   if(!Number.isFinite(number)||number<0)return editorNote('金额和数量要填不超过可记录范围的数字。','error');
+   fields[name]=number;continue;
+  }
+  fields[name]=raw;
+ }
+ if(!Object.keys(fields).length)return editorNote('还没有改动的内容，改一处再保存。','error');
+ const reason=String(values.reason||'').trim();
+ if(!reason)return editorNote('请写一句这次改动的依据。','error');
+ // 同一次修正失败重试沿用同一个编号，不会改两遍。
+ if(!editRequestId)editRequestId=crypto.randomUUID();
+ busy=true;save.disabled=true;save.textContent='正在写回…';
+ try{
+  const data=await api('/api/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:editRequestId,target_id:editing.id,fields,reason})});
+  const target=editing.id;
+  reviewNote={text:data.review.duplicate?`这次改动之前已经保存过，没有重复写：${reason}`:`已写回原记录（${target}），依据「${reason}」已留档。`};
+  if(written.some(item=>item.id===target))writtenStale=true;
+  editing=null;editRequestId=null;
+  render(await filteredState());
+  markWrittenStale();
+ }catch(error){editorNote(error.message,'error');}
+ finally{busy=false;save.disabled=false;save.textContent='保存并写回';}
+}
+function markWrittenStale(){const box=$('#feedback');if(box.hidden||!writtenStale||box.querySelector('[data-stale]'))return;const line=node('p','其中有的行已经修正过，最新数值以账目明细为准。');line.dataset.stale='1';box.append(line);}
+function resultRow(data,kind,row){const line=node('div',undefined,'result-row');line.append(node('time',row.date),node('span',rowSummary(kind,row),'what'),node('span','¥ '+money(row.amount),'amount'),fixButton(reviewTarget(data,kind,row)));return line;}
+// 记录结果卡：写下了什么、来源原话、还缺什么，都能就地改。
+function showResult(data,payload){
+ const receipt=payload.receipt;
+ written=[...payload.written.entries.map(row=>targetOf('entry',row)),...payload.written.sales.map(row=>targetOf('sale',row))];
+ writtenStale=false;
+ const box=$('#feedback');box.hidden=false;box.dataset.tone='result';box.replaceChildren();
+ const entries=payload.written.entries,sales=payload.written.sales;
+ const count=[entries.length?`${entries.length} 笔账目`:'',sales.length?`${sales.length} 条销量`:''].filter(Boolean).join('、');
+ box.append(node('strong',receipt.duplicate?'这条已经记好了':count?`已记下 ${count}`:'原话已保存，没有新增账目'));
+ for(const row of entries)box.append(resultRow(data,'entry',row));
+ for(const row of sales)box.append(resultRow(data,'sale',row));
+ const others=data.observations.filter(o=>o.record_id===receipt.record.id);
+ if(others.length)box.append(node('p','另外记下：'+others.map(o=>`${o.kind}${o.subject?'·'+o.subject:''} ${o.measure} ${o.value_num!=null?o.value_num:o.value_text||''}${o.unit||''}`).join('；')));
+ const foot=[`原话已保存：${receipt.record.raw_text}`];
+ if(receipt.status==='partial'&&receipt.parsed?.leftovers?.length)foot.push('这句里还没识别：'+receipt.parsed.leftovers.join('；'));
+ if(receipt.status==='unparsed')foot.push('这句话还没识别出具体信息，没有计入收支。');
+ if(!entries.length&&!sales.length&&receipt.status!=='unparsed')foot.push('这次没有新增账目。');
+ box.append(node('p',foot.join(' ')));
+}
+function selectPane(id){document.querySelectorAll('.tab').forEach(tab=>{const selected=tab.dataset.pane===id;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;});document.querySelectorAll('.pane').forEach(pane=>pane.hidden=pane.id!==id);}
+function render(data){
+ lastState=data;
+ $('#book-date').textContent=data.today+' · 本地试记数据';
+ if(!$('#recipe-form [name=effective_date]').value)$('#recipe-form [name=effective_date]').value=data.today;
+ renderAccounting(data);
+ const ledger=$('#ledger');ledger.replaceChildren();
+ if(!data.entries.length)empty(ledger,'还没有账目','在左边记一句营业额或进货，结果就会出现在这里。');
+ else{table(ledger,['日期','类型 / 摘要','金额',''],data.entries.slice().reverse().map(e=>[e.date,rowSummary('entry',e),'¥ '+money(e.amount),fixButton(reviewTarget(data,'entry',e))]));ledger.append(node('p',`共 ${data.entries.length} 条原始账目。合并后的收入和费用请查看“销售与月账”；要改哪一条就点“修正”，改的是原记录，不会多出一笔。`,'ledger-note'));}
+ const observations=$('#observations');observations.replaceChildren();
+ const nonMoney=data.observations.filter(o=>!['营业额','进货','支出'].includes(o.kind));
+ observations.append(node('p','客流、天气、排班与评分分开记录，不计入收支。商品销量也可在这里查看。','caption'));
+ if(!nonMoney.length)empty(observations,'不只是钱，也记下生意的日常','试试“今天客流120人，下雨”。');
+ else table(observations,['日期','类型 / 主体','指标','取值'],nonMoney.slice().reverse().map(o=>[o.occurred_at, o.kind+(o.subject?' · '+o.subject:''),o.measure,o.value_num!==null?String(o.value_num)+(o.unit||''):o.value_text]));
+ const sources=$('#sources');sources.replaceChildren(node('p','最近 100 条原话，保留你最初的说法。','caption'));
+ if(!data.records.length)empty(sources,'说过的话，都留在这里','识别不全的内容也会保存，方便核对。');
+ for(const r of data.records){const item=node('article',undefined,'source');const meta=node('div',undefined,'source-meta');meta.append(node('span',r.received_at.slice(0,16).replace('T',' ')),node('span',statuses[r.parse_status]||r.parse_status,'status'+(r.parse_status!=='parsed'?' pending':'')));item.append(meta);if(r.correction_of)item.append(node('p','改的是：'+correctionTarget(data,r.correction_of),'caption'));item.append(node('blockquote',r.raw_text||'这条历史数据没有保存原话。'));sources.append(item);}
+ renderReview(data);
+}
+function renderAccounting(data){
+ const box=$('#analysis-content'),s=data.summary;box.replaceChildren();
+ box.append(node('p',(data.month||'全部月份')+'；收入优先采用同范围营业总额，销售明细用于核对。','caption'));
+ table(box,['项目','金额（元）'],[[s.amount_basis==='settlement'?'结算实收（已扣平台费）':'营业额'+(s.estimated_revenue?'（包含售价推算）':''),money(s.revenue)],['采购付款',money(s.purchase)],['费用付款',money(s.expense)],['已记收支差额（非利润）',money(s.cash_balance)],['归属月份费用（整月）',money(s.accrued_expense)],['已记销量的标准原料成本估算',money(s.standard_consumption)],['实际耗料成本 / 实际利润','尚未核算']]);
+ box.append(node('p',s.cost_note,'ledger-note'));
+ for(const text of s.warnings||[])box.append(node('p',text,'caption'));
+ for(const d of s.daily_revenue)for(const text of d.warnings)box.append(node('p',d.date+'：'+text,'caption'));
+ box.append(node('h3','单品、平台与渠道'));
+ if(s.sales_analysis.length)table(box,['商品 / 品类','平台 / 渠道','销量','金额','标准原料成本'],s.sales_analysis.map(r=>[r.product_name+' / '+(r.product_category||'未分类'),(r.platform||'未注明')+' / '+(r.channel||'未注明'),precise(r.qty),money(r.amount)+(r.estimated?'（推算）':'')+(r.amount_basis==='settlement'?'（结算）':''),money(r.standard_cost)]));
+ else box.append(node('p','还没有销售明细。试试“今天美团牛肉面卖了30份，每份12元”。','caption'));
+ if(data.sales.length){box.append(node('h3','销量明细（按当前月份）'));table(box,['日期','商品 / 平台 / 品类','数量','金额',''],data.sales.slice().reverse().map(r=>[r.date,`${r.product_name}${r.platform?' · '+r.platform:''}${r.channel?' / '+r.channel:''}${r.product_category?' · '+r.product_category:''}`,precise(r.qty)+(r.unit||'份'),money(r.amount),fixButton(reviewTarget(data,'sale',r))]));}
+ for(const [field,label] of Object.entries({platform:'按平台',channel:'按渠道',product_category:'按商品品类'})){const rows=s.sales_breakdown?.[field]||[];if(rows.length){box.append(node('h3',label));table(box,['分类','销量','销售明细金额','标准原料成本'],rows.map(r=>[r.name,precise(r.qty),money(r.amount)+(r.estimated?'（推算）':'')+(r.amount_basis==='settlement'?'（结算）':''),money(r.standard_cost)]));}}
+ box.append(node('h3','费用归属月'));
+ table(box,['月份','分类','金额'],s.expense_by_month.map(r=>[r.month,r.category,money(r.amount)]));
+ const costs=$('#costs');costs.replaceChildren(node('p','每份标准原料成本估算。按所选月份截止日的配方和最近采购价格计算；不包含库存损耗、人工和房租。','caption'));
+ if(!data.costs.length)empty(costs,'先记采购，再设置配方','展开左侧“设置商品与配方”，填写原料用量。');
+ for(const c of data.costs){const item=node('article',undefined,'cost-item');item.append(node('h3',c.product.name+' · '+(c.product.category||'未分类')),node('p','每份标准原料成本：'+precise(c.unit_cost)+' 元；配方产出 '+c.units+' 份；价格截止 '+c.as_of));table(item,['原料','每份用量','进价 / 单位','每份成本（元）'],c.lines.map(l=>[l.ingredient,precise(l.per_portion_qty)+l.unit,precise(l.unit_price)+' / '+l.unit+(l.price_date?'（'+l.price_date+'）':''),precise(l.per_portion_cost)]));if(!c.complete)item.append(node('p','数据未齐：'+(c.missing.map(m=>m.name+' '+m.reason).join('；')||'缺生效配方')));costs.append(item);}
+}
+async function filteredState(){return api('/api/state'+($('#month').value?'?month='+encodeURIComponent($('#month').value):''));}
+$('#month').addEventListener('change',()=>refresh());$('#all-months').addEventListener('click',()=>{$('#month').value='';refresh();});
+$('#recipe-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.target.querySelector('button');button.disabled=true;try{await api('/api/recipes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});render(await filteredState());$('#recipe-feedback').textContent='配方已保存，可查看每份原料成本。';selectPane('costs');}catch(error){$('#recipe-feedback').textContent=error.message;}finally{button.disabled=false;}});
+let previewedCsv=null;
+$('#csv-text').addEventListener('input',()=>{previewedCsv=null;$('#commit-import').disabled=true;});
+$('#csv-file').addEventListener('change',async event=>{const file=event.target.files[0];if(file){$('#csv-text').value=await file.text();$('#csv-text').dispatchEvent(new Event('input'));}});
+$('#preview-import').addEventListener('click',async()=>{const csv=$('#csv-text').value;$('#commit-import').disabled=true;previewedCsv=null;try{const {plan}=await api('/api/import/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({csv})});$('#import-preview').textContent=`${plan.kind==='sales'?'销售明细':'流水账'}：${plan.row_count} 行可导入，${plan.skipped.length} 行待修正。\n`+plan.rows.slice(0,5).map(r=>`${r.date} ${r.product_name||r.item||r.category} ${r.platform||''} ${r.channel||''} ${r.product_category||''} 数量:${r.qty??'—'} 金额:${r.amount??'—'} ${r.amount_basis==='settlement'?'结算实收（已扣费用）':'商品销售额 / 付款'} ${r.period_month||''}`).join('\n')+'\n'+plan.skipped.map(r=>`第${r.row}行：${r.reason}`).join('\n');if(plan.row_count&&!plan.skipped.length&&csv===$('#csv-text').value){previewedCsv=csv;$('#commit-import').disabled=false;}}catch(error){$('#import-preview').textContent=error.message;}});
+$('#commit-import').addEventListener('click',async()=>{if(previewedCsv===null||previewedCsv!==$('#csv-text').value)return;$('#commit-import').disabled=true;try{const data=await api('/api/import/commit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({csv:previewedCsv})});render(await filteredState());$('#import-preview').textContent=`已导入 ${data.result.imported} 行；${data.result.duplicate?'整份文件已存在':`跳过 ${data.result.duplicates||0} 条重复行`}。`;selectPane('analysis');previewedCsv=null;}catch(error){$('#import-preview').textContent=error.message;$('#commit-import').disabled=false;}});
+async function refresh(){if(busy)return;$('#refresh').disabled=true;try{render(await filteredState());connection(true);$('#startup').hidden=true;}catch(error){connection(false);notice('暂时连不上本地服务','请保持启动服务的窗口打开，再点击“刷新”。','error');}finally{$('#refresh').disabled=false;}}
+function fill(text){if(busy)return;$('#message').value=text;$('#message').focus();}
+document.querySelectorAll('[data-example]').forEach(button=>button.addEventListener('click',()=>fill(button.dataset.example)));
+$('#fill-example').addEventListener('click',()=>fill('今天营业额1280，买了50斤牛肉花了680，客流120人，下雨'));
+document.querySelectorAll('.tab').forEach(tab=>{tab.addEventListener('click',()=>selectPane(tab.dataset.pane));tab.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const tabs=Array.from(document.querySelectorAll('.tab'));let index=tabs.indexOf(tab);index=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;selectPane(tabs[index].dataset.pane);tabs[index].focus();});});
+$('#refresh').addEventListener('click',refresh);
+$('#message').addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)&&!event.isComposing){event.preventDefault();$('#record-form').requestSubmit();}});
+$('#record-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(busy||!connected)return;const text=$('#message').value;if(!text.trim())return;
+ // 请求失败保留编号，重试同一条不会重复入账。
+ if(!pending||pending.text!==text)pending={text,request_id:crypto.randomUUID()};
+ busy=true;$('#submit').disabled=true;$('#submit').textContent='正在记录…';$('#message').readOnly=true;$('#refresh').disabled=true;
+ try{const data=await api('/api/records',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(pending)});const fresh=await filteredState();render(fresh);const r=data.receipt;
+ if(r.duplicate){notice('这条已经记好了','已恢复账本，没有重复记账。');}
+ else if(r.status==='unparsed'){notice('原话已保存，还没识别出具体信息','可以再试一句更明确的话，比如“今天客流120人”。这条没有计入收支。','warning');selectPane('sources');}
+ else if(r.parsed?.intent==='query'&&!r.entry_ids.length&&!r.sale_ids.length&&!r.observations.length){notice('账本已更新','在右侧切换查看账目、经营信息或原话。');}
+ else {showResult(fresh,data);selectPane(data.written.entries.length?'ledger':data.written.sales.length?'review':'observations');}
+ $('#message').value='';pending=null;
+ }catch(error){notice('这条还没有确认成功',error.name==='TimeoutError'?'等待超时，请再次点击“记下来”。重试不会重复记账。':error.message,'error');}
+ finally{busy=false;$('#message').readOnly=false;$('#submit').textContent='记下来';$('#submit').disabled=!connected;$('#refresh').disabled=false;}
+});
+if(location.protocol==='file:'){connection(false);$('#startup').textContent='这个页面需要连接本地服务。请打开 http://127.0.0.1:8765 使用。';$('#startup').hidden=false;$('#ledger').replaceChildren(node('p','请通过本地服务地址打开。','caption'));}else refresh();
+</script>
+</body>
+</html>

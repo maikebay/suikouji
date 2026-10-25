@@ -1,0 +1,26 @@
+# Runtime data and local/private configuration never belong in a source release.
+data/
+dist/
+.claude/
+.git/
+.env
+.env.*
+!.env.example
+compose.env
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.backup
+*.bak
+*.tar.gz
+*.zip
+__pycache__/
+*.py[cod]
+.DS_Store
+secrets/
+credentials/
+*account.json
+*state.json

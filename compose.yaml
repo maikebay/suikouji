@@ -1,0 +1,64 @@
+name: suikouji
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: suikouji:local
+    user: "${SUIKOUJI_UID:?Run tools/prepare_deploy.py first}:${SUIKOUJI_GID:?Run tools/prepare_deploy.py first}"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 70s
+    ports:
+      - "127.0.0.1:${SUIKOUJI_HOST_PORT:-8765}:8765"
+    environment:
+      SUIKOUJI_DB: /var/lib/suikouji/accounting.db
+      SUIKOUJI_BIND: 0.0.0.0
+      SUIKOUJI_PORT: "8765"
+      SUIKOUJI_API_ONLY: "1"
+      SUIKOUJI_API_KEY_FILE: /run/secrets/api_key
+      SUIKOUJI_OWNER_ID: "${SUIKOUJI_OWNER_ID:?owner required}"
+      SUIKOUJI_PRINCIPAL_ID: "${SUIKOUJI_PRINCIPAL_ID:?principal required}"
+      SUIKOUJI_WORKSPACE_ID: "${SUIKOUJI_WORKSPACE_ID:?workspace required}"
+      SUIKOUJI_WORKSPACE_NAME: "${SUIKOUJI_WORKSPACE_NAME:?workspace name required}"
+      SUIKOUJI_PROFILE_ID: "${SUIKOUJI_PROFILE_ID:-restaurant}"
+      SUIKOUJI_TIMEZONE: "${SUIKOUJI_TIMEZONE:-Asia/Shanghai}"
+      SUIKOUJI_ILINK_ACCOUNT_PATH: ""
+      SUIKOUJI_ILINK_STATE_PATH: ""
+      SUIKOUJI_ILINK_ALLOWED_PEERS: ""
+    volumes:
+      - type: bind
+        source: "${SUIKOUJI_DATA_DIR:?data directory required}"
+        target: /var/lib/suikouji
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SUIKOUJI_BACKUP_DIR:?backup directory required}"
+        target: /var/backups/suikouji
+        bind:
+          create_host_path: false
+    secrets:
+      - api_key
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    healthcheck:
+      test: ["CMD", "python3", "-m", "engine.deployment", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  api_key:
+    file: "${SUIKOUJI_API_KEY_PATH:?API key file required}"

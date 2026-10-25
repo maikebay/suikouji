@@ -1,0 +1,331 @@
+openapi: 3.0.3
+info:
+  title: 随口记 Agent API
+  version: agent-1
+  description: |
+    面向受认证 Agent 的个人记账与个人事业接口。workspace_id 必须属于服务端
+    principal 的 owner；调用方不能指定 owner。先读取 capabilities，信息不足
+    或能力不支持时主动追问。标准成本不等于实际成本或实际利润。
+    写入 request_id 限定于 principal/workspace/operation，同号不同内容返回 409。
+    业务与完整响应一起提交；重放保留原业务结果，顶层 duplicate 改为 true。
+    修正响应保留 review 包装，其 duplicate 同步顶层标记；record、changed、history 保留原结果。
+    X-Request-ID 是服务端生成的追踪编号，与业务 request_id 分离。
+    旧版本孤立请求若已有业务结果而无完整响应，返回 409 recovery_needs_review 供人工核对。
+    已完成请求仍校验 owner/workspace；后续 profile 变更或修正目标删除不阻止重放。
+    JSON 请求体上限 32768 字节；CSV 本身最多 2000000 UTF-8 字节，HTTP 仍受请求体上限约束。
+servers:
+  - url: http://127.0.0.1:8765
+security:
+  - bearerAuth: []
+paths:
+  /v1/capabilities:
+    get:
+      operationId: getCapabilities
+      responses:
+        '200': {description: Product capability and clarification contract}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/workspaces:
+    get:
+      operationId: listWorkspaces
+      responses:
+        '200': {description: Workspaces visible to the configured principal and allowlist}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/captures:
+    post:
+      operationId: captureText
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptureRequest'}
+      responses:
+        '200': {description: 'Terminal capture including parsed, partial, unparsed, rejected or needs_confirmation and its projections'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409':
+          description: idempotency_conflict or request_in_progress; retry in-progress with the same business request_id
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/captures/{capture_id}:
+    get:
+      operationId: getCapture
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceId'}
+        - {$ref: '#/components/parameters/CaptureId'}
+      responses:
+        '200': {description: Capture detail and projections}
+        '404': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/timeline:
+    get:
+      operationId: listTimeline
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceId'}
+        - {name: q, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/Start'}
+        - {$ref: '#/components/parameters/End'}
+        - {name: parse_status, in: query, schema: {type: string}}
+        - {name: source, in: query, schema: {type: string}}
+        - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100}}
+        - {name: before, in: query, description: 'Cursor occurred_at|created_at|id from the previous page', schema: {type: string}}
+      responses:
+        '200': {description: Timeline page}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/summary:
+    get:
+      operationId: getSummary
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceId'}
+        - {name: month, in: query, schema: {type: string, pattern: '^[0-9]{4}-[0-9]{2}$'}}
+      responses:
+        '200': {description: Financial summary based on ledger entries}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/entries:
+    get:
+      operationId: listEntries
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceId'}
+        - {$ref: '#/components/parameters/Start'}
+        - {$ref: '#/components/parameters/End'}
+        - {name: type, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Entries}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/sales:
+    get:
+      operationId: listSales
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceId'}
+        - {$ref: '#/components/parameters/Start'}
+        - {$ref: '#/components/parameters/End'}
+      responses:
+        '200': {description: Sales detail; not added again to ledger totals}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/observations:
+    get:
+      operationId: listObservations
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceId'}
+        - {$ref: '#/components/parameters/Start'}
+        - {$ref: '#/components/parameters/End'}
+        - {name: kind, in: query, schema: {type: string}}
+        - {name: subject, in: query, schema: {type: string}}
+        - {name: measure, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Derived operational observations; not financial authority}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/reviews:
+    get:
+      operationId: listReviews
+      parameters: [{$ref: '#/components/parameters/WorkspaceId'}]
+      responses:
+        '200': {description: Review items}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: applyReview
+      description: Call only after the user has confirmed the fields and correction reason.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReviewRequest'}
+      responses:
+        '200':
+          description: Correction result; duplicate is exposed at both levels for compatibility
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReviewResponse'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/imports/preview:
+    post:
+      operationId: previewImport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ImportPreviewRequest'}
+      responses:
+        '200':
+          description: Exact plan to display for confirmation; token valid for 1800 seconds
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [preview, sha256, preview_token, workspace_id, confirmation_required, expires_in_seconds, duplicate_file, existing_batch]
+                properties:
+                  preview: {type: object}
+                  sha256: {type: string}
+                  preview_token: {type: string}
+                  workspace_id: {type: string}
+                  confirmation_required: {type: boolean, enum: [true]}
+                  expires_in_seconds: {type: integer, enum: [1800]}
+                  duplicate_file: {type: boolean, description: Whether this exact file already has an import batch}
+                  existing_batch:
+                    type: object
+                    nullable: true
+                    required: [id, filename, rows]
+                    properties:
+                      id: {type: string}
+                      filename: {type: string}
+                      rows: {type: integer, minimum: 0}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/imports/commit:
+    post:
+      operationId: commitImport
+      description: |
+        Submit the exact CSV and token after user confirmation. Token is scoped to
+        principal/workspace/CSV, expires after 1800 seconds, and is consumed atomically
+        by one request_id. Identical successful request replay still works after token
+        expiry. Nested result.imported keeps the original count on request replay.
+        A batch appearing after preview without this request's complete response returns
+        recovery_needs_review. Review it and obtain a new preview; a preview already showing
+        that batch can be confirmed as an intentional duplicate without adding ledger rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ImportCommitRequest'}
+      responses:
+        '200': {description: Original import result or cached replay}
+        '409':
+          description: 'confirmation_required, preview_required, preview_mismatch, preview_expired, preview_consumed, import_needs_review, import_conflict, recovery_needs_review, idempotency_conflict or request_in_progress'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        default: {$ref: '#/components/responses/Error'}
+  /healthz:
+    get:
+      security: []
+      responses:
+        '200': {description: Process is alive; no database opened}
+  /readyz:
+    get:
+      security: []
+      responses:
+        '200': {description: Read-only database check and configured worker readiness passed}
+        '503': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Authentication scheme is case-insensitive; the ASCII token must match exactly.
+  responses:
+    Error:
+      description: |
+        Structured error. 400 invalid input; 401 missing/invalid Bearer; 403 denied scope;
+        404 absent route/capture; 405 unsupported method (Allow header); 409 conflict/in-progress;
+        413 request body too large; 415 non-JSON media; 500 failed operation;
+        503 missing authentication configuration or database/worker not ready.
+      headers:
+        X-Request-ID:
+          description: Server-generated trace ID, also present at both locations in the error body
+          schema: {type: string}
+        Allow:
+          description: Present on 405; lists only the methods supported by the requested route
+          schema: {type: string, enum: [GET, POST, 'GET, POST']}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+  parameters:
+    WorkspaceId:
+      name: workspace_id
+      in: query
+      required: true
+      schema: {type: string, minLength: 1}
+    CaptureId:
+      name: capture_id
+      in: path
+      required: true
+      schema: {type: string}
+    Start:
+      name: start
+      in: query
+      schema: {type: string}
+    End:
+      name: end
+      in: query
+      schema: {type: string}
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error, request_id]
+      properties:
+        request_id: {type: string, description: Server trace ID matching X-Request-ID}
+        error:
+          type: object
+          required: [code, message, details, request_id]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            details: {type: object}
+            request_id: {type: string, description: Same server trace ID; retained for compatibility}
+    CaptureRequest:
+      type: object
+      required: [workspace_id, text, request_id]
+      properties:
+        workspace_id: {type: string, minLength: 1}
+        text: {type: string, minLength: 1, maxLength: 2000}
+        request_id: {type: string, minLength: 1, maxLength: 100}
+        source: {type: string, enum: [agent, chat, ilink, web, cli]}
+        received_at: {type: string, maxLength: 80, description: 'ISO date/time beginning YYYY-MM-DD'}
+        context: {type: string}
+        intent: {type: string}
+        profile_id: {type: string, description: Must match the workspace profile}
+    ReviewResponse:
+      type: object
+      required: [review, duplicate]
+      properties:
+        duplicate:
+          type: boolean
+          description: False on first success, true on identical successful request replay; matches review.duplicate
+        review: {$ref: '#/components/schemas/ReviewResult'}
+    ReviewResult:
+      type: object
+      required: [duplicate, record, target_id, changed]
+      properties:
+        duplicate:
+          type: boolean
+          description: Compatibility replay flag, matching the top-level duplicate
+        record:
+          type: object
+          description: Original correction capture, preserved on request replay
+        target_id: {type: string, description: 'entry:<id> or sale:<id>'}
+        changed:
+          type: object
+          description: Original changed fields and written values, preserved on request replay
+        history:
+          type: array
+          description: Original correction history when present, preserved on request replay
+          items: {type: object}
+    ReviewRequest:
+      type: object
+      required: [workspace_id, request_id, target_id, fields, reason]
+      properties:
+        workspace_id: {type: string, minLength: 1}
+        request_id: {type: string, minLength: 1, maxLength: 100}
+        target_id: {type: string, description: 'entry:<id> or sale:<id>'}
+        fields: {type: object}
+        reason: {type: string, minLength: 1, maxLength: 500}
+    ImportPreviewRequest:
+      type: object
+      required: [workspace_id, csv]
+      properties:
+        workspace_id: {type: string, minLength: 1}
+        csv: {type: string, minLength: 1, description: UTF-8 CSV; HTTP body limit is 32768 bytes including JSON encoding}
+    ImportCommitRequest:
+      allOf:
+        - {$ref: '#/components/schemas/ImportPreviewRequest'}
+        - type: object
+          required: [request_id, confirmed, preview_token]
+          properties:
+            request_id: {type: string, minLength: 1, maxLength: 100}
+            confirmed: {type: boolean, enum: [true]}
+            preview_token: {type: string, minLength: 1}
+            filename: {type: string, minLength: 1, maxLength: 200}
