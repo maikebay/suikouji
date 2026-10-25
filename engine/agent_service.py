@@ -1,8 +1,8 @@
 """受控的 Agent 业务门面。
 
 REST、iLink 和未来 MCP 都通过这里访问业务，不直接操作 SQLite。
-门面只做输入校验、工作空间授权和结果整形；解析、修正与导入规则仍复用
-现有 engine 模块，避免不同接入方式产生不同的账务语义。
+Agent 先整理口语记录，门面校验结构化事实、工作空间授权和结果；旧原话
+模式、修正与导入仍复用现有 engine 模块。所有写入共用 Store 的账务投影。
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 
+from .agent_normalization import persist_structured, validate_structured
 from .capabilities import product_capabilities
 from .importer import commit_import, plan_import
 from .model import month_range
@@ -143,7 +144,7 @@ class AgentService:
     def capture_text(self, principal: Principal, workspace_id: str, text: str,
                      request_id: str, *, source: str = "agent", received_at=None,
                      context=None, intent=None, profile_id=None, dedup_ref=None,
-                     peer=None) -> dict:
+                     peer=None, structured=None) -> dict:
         workspace = self.workspace(principal, workspace_id)
         request_id = self._request_id(request_id)
         text = self._text(text)
@@ -168,6 +169,10 @@ class AgentService:
         payload = {"text": text, "source": source, "received_at": received_at,
                    "context": context, "intent": intent, "profile_id": profile_id,
                    "peer": peer, "dedup_ref": dedup_ref}
+        if structured is not None:
+            # Preserve the legacy fingerprint byte-for-byte when no structured
+            # data was supplied. Modes and normalized facts share one request ID.
+            payload["structured"] = structured
         # Claim, business projections, and the full response commit together.
         # Store's nested savepoints never publish an intermediate result.
         with self.store.transaction():
@@ -185,6 +190,14 @@ class AgentService:
                 return {**cached, "duplicate": True}
             if profile_id is not None and profile_id != workspace["profile_id"]:
                 raise AgentError("profile_mismatch", "profile_id 与工作空间不一致")
+            normalized = None
+            if structured is not None:
+                if workspace["profile_id"] != "restaurant":
+                    raise AgentError("profile_unsupported", "当前结构化记账只支持 restaurant 工作空间")
+                try:
+                    normalized = validate_structured(text, structured)
+                except (ValueError, TypeError, OverflowError) as exc:
+                    raise AgentError("invalid_structured", str(exc)) from exc
             existing_record = self.store.record_find(workspace_id, dedup_ref)
             if existing_record and (
                 existing_record.get("raw_text") != text
@@ -197,20 +210,34 @@ class AgentService:
             if (legacy_record or (existing_record
                     and existing_record["parse_status"] not in {"pending", "parsing"})):
                 raise AgentError("recovery_needs_review", "旧请求已有业务结果但缺少完整响应，请人工核对", status=409)
-            try:
-                receipt = ingest(
-                    self.store, workspace_id, text, source=source, peer=peer,
+            if normalized is not None:
+                if existing_record:
+                    # A structured request is always atomic. A leftover pending
+                    # raw record cannot establish which normalized facts were
+                    # accepted, even if its ledger_refs happen to be empty.
+                    code = ("request_in_progress" if existing_record["parse_status"] == "parsing"
+                            else "recovery_needs_review")
+                    raise AgentError(code, "已有原话但缺少结构化完整响应，请核对后再处理", status=409)
+                receipt = persist_structured(
+                    self.store, workspace_id, text, normalized, source=source, peer=peer,
                     dedup_ref=dedup_ref, received_at=received_at, context=context,
-                    intent=intent, profile_id=profile_id,
+                    intent=intent, profile_id=workspace["profile_id"],
                 )
-            except (ValueError, TypeError, OverflowError) as exc:
-                # Only a rejected input is a terminal business result. Response
-                # persistence failures must escape and roll back the whole request.
-                record = self.store.record_find(workspace_id, dedup_ref)
-                if not record or record["parse_status"] != "rejected":
-                    raise
-                receipt = {"record": record, "duplicate": False, "status": "rejected",
-                           "parsed": None, "warnings": [str(exc)]}
+            else:
+                try:
+                    receipt = ingest(
+                        self.store, workspace_id, text, source=source, peer=peer,
+                        dedup_ref=dedup_ref, received_at=received_at, context=context,
+                        intent=intent, profile_id=profile_id,
+                    )
+                except (ValueError, TypeError, OverflowError) as exc:
+                    # Only a rejected input is a terminal business result. Response
+                    # persistence failures must escape and roll back the whole request.
+                    record = self.store.record_find(workspace_id, dedup_ref)
+                    if not record or record["parse_status"] != "rejected":
+                        raise
+                    receipt = {"record": record, "duplicate": False, "status": "rejected",
+                               "parsed": None, "warnings": [str(exc)]}
             if receipt.get("status") in {"pending", "parsing"}:
                 raise AgentError("request_in_progress", "原话仍在处理中，请稍后重试", status=409)
             detail = self.store.record_detail(workspace_id, receipt["record"]["id"])
@@ -231,6 +258,8 @@ class AgentService:
                     "workspace_id": workspace_id,
                 },
             }
+            if normalized is not None:
+                result["normalization"] = receipt["normalization"]
             self._finish(claim, result)
             return result
 

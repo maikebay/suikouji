@@ -14,23 +14,23 @@ import tarfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.1.0-staging"
+VERSION = "0.1.1-staging"
 FILES = (
     "Dockerfile", "compose.yaml", ".dockerignore", ".gitignore", "README.md", "CONTEXT.md",
-    "engine/__init__.py", "engine/accounting.py", "engine/agent_service.py", "engine/backup.py",
+    "engine/__init__.py", "engine/accounting.py", "engine/agent_service.py", "engine/agent_normalization.py", "engine/backup.py",
     "engine/capabilities.py", "engine/cli.py", "engine/cost.py", "engine/deployment.py",
     "engine/importer.py", "engine/model.py", "engine/observe.py", "engine/parser.py",
     "engine/profile.py", "engine/reconcile.py", "engine/report.py", "engine/review.py",
     "engine/runtime.py", "engine/sheet.py", "engine/store.py", "engine/web.py",
     "channel/__init__.py", "channel/aes.py", "channel/bot.py", "channel/ilink.py",
     "web/demo.html", "deploy/README.md", "deploy/.env.example", "deploy/compose.env.example",
-    "deploy/BOT_DEPLOY.md", "docs/openapi.yaml", "docs/agent-capabilities.md",
+    "deploy/BOT_DEPLOY.md", "docs/openapi.yaml", "docs/agent-capabilities.md", "docs/report-output-design.md",
     "docs/accounting-v1.md", "docs/review-and-correction.md", "docs/parser-boundaries.md",
     "docs/ilink-protocol-notes.md", "docs/adr/0001-legacy-shop-as-workspace.md",
     "docs/engineering/lessons.md", "tools/prepare_deploy.py", "tools/build_release.py",
     "tools/verify_api.py", "tests/test_accounting.py", "tests/test_aes.py",
     "tests/test_agent_atomicity.py", "tests/test_agent_bot.py", "tests/test_agent_final_regressions.py",
-    "tests/test_agent_http_contract.py", "tests/test_agent_legacy_recovery.py",
+    "tests/test_agent_http_contract.py", "tests/test_agent_legacy_recovery.py", "tests/test_agent_normalization.py",
     "tests/test_agent_preview.py", "tests/test_agent_store_compat.py", "tests/test_bot_delivery.py",
     "tests/test_deployment.py", "tests/test_engine.py", "tests/test_foundation.py", "tests/test_ilink.py",
     "tests/test_observe.py", "tests/test_parser_boundaries.py", "tests/test_prepare_deploy.py",

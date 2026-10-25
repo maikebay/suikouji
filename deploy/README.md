@@ -82,7 +82,7 @@ docker compose --env-file /opt/suikouji-state/compose.env up -d --wait --wait-ti
 python3 tools/build_release.py
 ```
 
-输出 `dist/suikouji-0.1.0-staging.tar.gz` 与 `.sha256`；已有输出拒绝覆盖，重建使用 `--output-dir` 指定新目录或 `--version` 指定新版本。归档严格按显式文件清单，含 per-file `SHA256SUMS` 和 `RELEASE.json`，不遍历 data/、.claude/、真实 .env 或凭据。Docker build context 也采用默认排除，只允许运行源码和必需网页。没有 GitHub 发布、镜像推送或服务器操作。
+输出 `dist/suikouji-0.1.1-staging.tar.gz` 与 `.sha256`；已有输出拒绝覆盖，重建使用 `--output-dir` 指定新目录或 `--version` 指定新版本。归档严格按显式文件清单，含 per-file `SHA256SUMS` 和 `RELEASE.json`，不遍历 data/、.claude/、真实 .env 或凭据。Docker build context 也采用默认排除，只允许运行源码和必需网页。没有 GitHub 发布、镜像推送或服务器操作。
 
 ## 原生 Python 运行参考
 
@@ -152,6 +152,12 @@ python3 -m engine.deployment restore /var/backups/suikouji/staging-001.db /var/l
 ```
 
 这些命令使用发布入口的保护：备份和恢复都要求新目标，`check` 未通过时退出非零。每次选择新的文件名。先恢复到新路径并执行 `check`，再考虑切换服务。保留离线/异地加密备份，并定期演练恢复；本轮不替用户执行线上备份。
+
+## iLink与Agent整理的接法
+
+若外部 Grokbot/Agent 已接入iLink，推荐让它独占该Bot账号的消息接收和回复，先按 `/v1/capabilities` 的 `input_preparation` 整理，再向随口记提交 `text + structured`。此时保持本服务的三个iLink变量为空，只运行认证API。同账号不能再启动本服务worker并行拉取消息；详细的消息身份、固定请求重试与追问边界见[微信iLink入口](../docs/agent-capabilities.md#微信-ilink-入口)。
+
+下述内置worker当前直接把文本送到受控规则入口，没有模型整理层。它与外部Agent整理方案是两种接法，不能把结构化API上线描述成内置worker已经能理解任意口语。
 
 ## iLink worker 合同
 

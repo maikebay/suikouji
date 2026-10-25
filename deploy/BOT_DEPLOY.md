@@ -47,6 +47,24 @@ python3 tools/verify_api.py --config /opt/suikouji-state/compose.env
 
 8. 按[备份恢复说明](README.md#compose-备份与恢复)生成唯一的新备份、校验，并恢复到另一个新文件演练。不得替换当前运行数据库。检查 Compose health 为 healthy，根路径 `/` 返回 404 属于 API_ONLY 的正常行为，不是安装失败。
 
+## 0.1.1-staging 的营业额回归
+
+此版本新增 Agent 先整理口语、保留原话和结构化结果一次提交的调用路径；同时修复旧文本入口“今天的营业额很差，只有1300”跨逗号漏记的问题。发布到 GitHub 后，必须从该 commit 重新 clone 到全新目录执行回归，不能只在最初上传目录测试：
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+在独立测试账本中提交“今天是周末，但是天气不好，阴天，天气也越来越冷了。外面还有跑马拉松的，可能影响生意。今天的营业额很差，只有1300。”，预期一笔日营业额1300、天气观测、逐字原话；未结构化叙述仍使结果保持 `partial`。同一 `request_id` 重试应返回原结果且不新增账目。此业务写入验收只能用独立测试账本，不向用户运行中的账本补发该句。
+
+更新后的 Agent 应重新读取 `/v1/capabilities`，先遵循 `agent_policy.input_preparation` 整理用户口语，在同一 capture 中保留 `text` 并提交 `structured`；按[结构化调用示例](../docs/agent-capabilities.md#截图原话的调用示例)在独立测试库验证，不能只更新服务却仍让 Agent 改写原话交给旧解析器。再遵循 `agent_policy.capture_result_policy`：HTTP 200 不代表金额已入账；按 `entries` / `sales` 和 `parsed.leftovers` 分别报告。已完成的旧请求会继续重放旧响应，更新不会自动补记历史1300；不要换请求号重发整段原话处理历史漏记。历史核对和补录需单独安排，见[Agent 能力契约](../docs/agent-capabilities.md#写入结果应怎样向用户说明)。
+
+## iLink接入与用户可读回复
+
+外部Grokbot已接入iLink时，由它独占消息接收、整理和回复，按[微信入口约定](../docs/agent-capabilities.md#微信-ilink-入口)调用结构化API，本服务内置worker保持关闭。直接用内置worker时仍为规则解析，没有模型整理层；不要在安装报告中声称已经支持任意口语理解。
+
+调用方同时遵循 `agent_policy.user_presentation`：告诉用户正在核对哪本账、哪个时间范围的营业收入、进货、费用和商品销量；不要把接口名、None/null或服务器路径贴作进度和报表。微信优先简短纯文本，金额和数据缺口用中文说明；完整展示规则见[面向用户的进度和报表](../docs/agent-capabilities.md#面向用户的进度和报表)。本包没有新增固定模板报表生成接口。
+
 ## 验收报告
 
 报告源码版本、校验结果、镜像构建结果、容器 health、回环访问地址、工作空间 ID、状态/密钥文件路径（不含内容）、备份恢复演练结果、未验收项。部署失败保留数据并说明原因；不要通过删除状态目录、重新初始化或关闭认证掩盖问题。

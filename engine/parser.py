@@ -345,11 +345,24 @@ def classify(clause: str) -> dict | None:
 # ---------------------------------------------------------------- 分句
 
 
-def split_clauses(text: str) -> list:
-    clean = re.sub(r"(\d),(\d{3})", r"\1\2", text)
-    clean = re.sub(r"[。；;！!？?]", "|", clean)
-    clean = re.sub(r"[，,、]", "|", clean)
-    return [s.strip() for s in clean.split("|") if s.strip()]
+def split_clauses(text: str, base=None, *, source=None) -> list:
+    def plain(fragment):
+        clean = re.sub(r"(\d),(\d{3})", r"\1\2", fragment)
+        clean = re.sub(r"[。；;！!？?]", "|", clean)
+        clean = re.sub(r"[，,、]", "|", clean)
+        return [s.strip() for s in clean.split("|") if s.strip()]
+
+    # 只保留经原文验证的营业额续句；遮蔽观测或销量不能制造新的金额归属。
+    original = text if source is None else source
+    clauses, cursor = [], 0
+    for start, end in _daily_revenue_continuations(original, base):
+        if text[start:end] != original[start:end]:
+            continue
+        clauses.extend(plain(text[cursor:start]))
+        clauses.append(text[start:end].strip())
+        cursor = end
+    clauses.extend(plain(text[cursor:]))
+    return clauses
 
 
 def _is_noise(fragment: str, base=None) -> bool:
@@ -392,6 +405,54 @@ def find_dates(text, base=None, *, strict=True):
 def _ledger_amounts(text, base=None):
     """日期、费用月份和采购数量不是金额；所有分段共用这个口径。"""
     return find_amounts(_mask(text, find_dates(text, base) + find_periods(text, base) + find_quantities(text)))
+
+
+_DAILY_REVENUE_HEAD = re.compile(
+    r"\s*(?:(?:美团|饿了么|抖音|微信|门店)\s*)?"
+    r"(?:(?:堂食|自取|配送|外卖)\s*)?的?\s*"
+    r"(?P<anchor>营业额|销售额|营收|流水)\s*"
+    r"(?:(?:很|比较|有点|太)?(?:差|低|少|高|好)|一般|不错|不好|不多|不理想)?\s*"
+)
+_DAILY_REVENUE_MARK = re.compile(
+    r"\s*(?:只有|仅有|仅|才|一共|总共|合计|总计|共计|共)\s*(?:是)?\s*"
+)
+
+
+def _daily_revenue_continuations(text, base=None):
+    """只连接完整的「日营业额评价，显式合计」句，不推测任意逗号两侧的语义。"""
+    today = base or _dt.date.today()
+    start = 0
+    for boundary in re.finditer(r"[。；;！!？?]+|$", text):
+        sentence = text[start:boundary.start()]
+        end_mark = boundary.group()
+        offset = start
+        start = boundary.end()
+        # 换行可能把预计、计数单位或竞争金额隔开，不能只认截断的一行。
+        # 连续标点中的任何问号都保留疑问含义，包括「！？」「!?」。
+        if '\n' in sentence or '\r' in sentence or re.search(r'[？?]', end_mark):
+            continue
+        # 千位逗号属于金额 token；其他逗号必须恰好一个，顿号不属于此扩展。
+        commas = list(re.finditer(r"，|(?<!\d),|,(?!\d{3}(?!\d))", sentence))
+        if len(commas) != 1 or '、' in sentence:
+            continue
+        comma = commas[0]
+        head, tail = sentence[:comma.start()], sentence[comma.end():]
+        dates = find_dates(head, base)
+        match = _DAILY_REVENUE_HEAD.fullmatch(_mask(head, dates))
+        if not match or len(dates) > 1 or any(d['end'] > match.start('anchor') for d in dates):
+            continue
+        preceding_dates = find_dates(text[:offset + comma.start()], base)
+        if preceding_dates and preceding_dates[-1]['date'] > today.isoformat():
+            continue
+        marker = _DAILY_REVENUE_MARK.match(tail)
+        if not marker:
+            continue
+        amount_text = tail[marker.end():].strip()
+        amounts = find_amounts(amount_text)
+        if (len(amounts) != 1 or amounts[0]['start'] != 0
+                or amounts[0]['end'] != len(amount_text)):
+            continue
+        yield offset, boundary.start()
 
 
 def _entry_boundary(clause, lower, end, base=None):
@@ -794,7 +855,7 @@ def parse(text: str, base: _dt.date | None = None, extra_mask=None) -> dict:
     entries = []
     leftovers = [text[s['start']:s['end']].strip(' ，,、') for s in unresolved_sales]
     inherited_date = find_date('', base)['date']
-    for clause in split_clauses(work_text):
+    for clause in split_clauses(work_text, base, source=text):
         clause_date = inherited_date
         for segment in split_by_type_switch(clause, base):
             result = analyze_clause(segment, base, fallback_date=clause_date)

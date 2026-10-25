@@ -188,10 +188,13 @@ class DemoHandler(BaseHTTPRequestHandler):
             if not workspace:
                 raise AgentError("workspace_required", "必须指定 workspace_id")
             workspace = self._check_workspace(workspace)
+            if "structured" in payload and not isinstance(payload["structured"], dict):
+                raise AgentError("invalid_structured", "structured 必须是包含整理结果的对象，不能为 null")
             result = service.capture_text(principal, workspace, payload.get("text"), payload.get("request_id"),
                                           source=payload.get("source", "agent"), received_at=payload.get("received_at"),
                                           context=payload.get("context"), intent=payload.get("intent"),
-                                          profile_id=payload.get("profile_id"))
+                                          profile_id=payload.get("profile_id"),
+                                          **({"structured": payload["structured"]} if "structured" in payload else {}))
             return self._send(200, result)
         if not workspace:
             raise AgentError("workspace_required", "必须指定 workspace_id")
