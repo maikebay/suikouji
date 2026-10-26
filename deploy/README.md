@@ -1,6 +1,6 @@
 # Staging deployment
 
-本目录提供 Docker Compose 发布包说明与原生运行参考，不包含账号、token 或数据库。默认发布包只启用 Agent API；当前独立 iLink 通道面向腾讯 iLink **Bot**，不是普通个人微信号，尚未进行真实联调。
+本目录提供 0.2.0-staging Docker Compose 发布包说明与原生运行参考，不包含账号、token 或数据库。新库直接使用 schema v6，含独立 `thoughts` 与 `thought_tags`；旧 v5 库必须先备份并显式迁移副本。默认发布包只启用 Agent API；当前独立 iLink 通道面向腾讯 iLink **Bot**，不是普通个人微信号，尚未进行真实联调。
 
 ## Docker Compose 发布包
 
@@ -34,7 +34,7 @@ python3 tools/verify_api.py --config /opt/suikouji-state/compose.env
 
 服务端口固定容器内 8765，宿主默认 `127.0.0.1:8765`；准备参数 `--port` 可改宿主端口。默认仅 v1 与探针，`/`、`/api/*` 返回 404。现有网页为本地 demo，不是本发布包的服务器控制台。Agent 使用 HTTP 工具对接接口，包内没有 MCP/Grok 插件。远程 bot 需要另行配置经授权的 VPN/私网/TLS 反向代理，不能直接公开旧无认证路由。
 
-首次启动用同目录临时库完整初始化后原子发布为 `/var/lib/suikouji/accounting.db`（0600）；目标已存在则只读检查，不补列、迁移或更改 profile。schema/owner/workspace/profile/timezone 不匹配会退出。工作空间名称只用于新建，不在重启时重命名。时间默认 Asia/Shanghai，容器进程 TZ 同步该设置。餐饮 profile 已实现受控解析，其余 profile 不代表已完成对应行业核算。
+首次启动用同目录临时库完整初始化 schema v6 后原子发布为 `/var/lib/suikouji/accounting.db`（0600）；目标已存在则只读检查，不补列、迁移或更改 profile。schema/owner/workspace/profile/timezone 不匹配会退出。工作空间名称只用于新建，不在重启时重命名。时间默认 Asia/Shanghai，容器进程 TZ 同步该设置。餐饮 profile 已实现受控解析，其余 profile 不代表已完成对应行业核算。
 
 源码目录可替换，数据留在外部状态目录；Compose 项目名固定 suikouji，禁止在多个解压目录同时启动同一数据目录，禁止扩为多副本或同时用 CLI 写入。容器非 root、根文件系统只读、临时目录可写，停止期限 70 秒。停止只操作本服务，不影响数据：
 
@@ -74,7 +74,39 @@ docker compose --env-file /opt/suikouji-state/compose.env run --rm --no-deps api
 docker compose --env-file /opt/suikouji-state/compose.env up -d --wait --wait-timeout 90
 ```
 
-演练不会切换当前账本；真正恢复切换必须另行确认、停写并保留旧文件。升级先备份、在副本上演练显式迁移；新的容器不自动升级数据库。镜像回退不能替代数据库回退，不要删除或重新创建状态目录来消除启动错误。
+演练不会切换当前账本；真正恢复切换须有用户授权、停写并保留旧文件。相同版本的 SQLite backup/restore 包含随想、标签、原话、控制表和完整幂等回执。`engine.cli export` 的 JSON 虽包含随想及标签，仍不是完整数据库备份，不承诺 JSON restore 能恢复全部控制状态；不要以导出文件替代 SQLite 备份。保留离线/异地加密备份并定期恢复演练。
+
+### 从 v5 升级到 v6
+
+此流程面向0.1.1-staging的v5库升级至0.2.0-staging。API、readiness 和容器启动均不自动升级旧库；新版本普通 CLI 打开旧库也不是推荐升级方式。以下均为已授权目标环境的操作说明，本文没有执行真实迁移、切换或 Docker 验收。
+
+1. 保留旧程序/镜像和原部署配置。用**旧版本**的 `engine.deployment backup` 对v5库生成唯一的新备份，并用旧版本 `check` 验证。新版本的普通 backup/check 要求v6，不能拿它们直接验证旧库。运行中的单实例可先做一次一致快照演练。
+
+   ```bash
+   python3 -m engine.deployment backup /var/lib/suikouji/accounting.db /var/backups/suikouji/v5-rehearsal-001.db
+   ```
+
+   ```bash
+   python3 -m engine.deployment check /var/backups/suikouji/v5-rehearsal-001.db
+   ```
+
+2. 切到已校验的**新版本**源码或镜像，用显式 `migrate SOURCE DESTINATION` 从v5备份生成新的v6迁移副本。源文件只读、保持不变；目标必须不存在，不能传当前在线库路径。目标已存在时重复执行失败；需要重演练就选另一个新目标。迁移失败不能拿未校验文件切换；检查错误并保留源备份后重新演练。
+
+   ```bash
+   python3 -m engine.deployment migrate /var/backups/suikouji/v5-rehearsal-001.db /var/lib/suikouji/v6-rehearsal-001.db
+   ```
+
+   ```bash
+   python3 -m engine.deployment check /var/lib/suikouji/v6-rehearsal-001.db
+   ```
+
+   Compose的一次性容器复用入口命令，使用新镜像时形式为 `docker compose --env-file /opt/suikouji-state/compose.env run --rm --no-deps api migrate /var/backups/suikouji/v5-rehearsal-001.db /var/lib/suikouji/v6-rehearsal-001.db`。迁移的是独立副本，不开启第二个业务写进程。检查原话与旧汇总未变、旧完整回执原样保留、新表及索引就绪，并在隔离测试库验随想写入/查询/重放；不能向真实账本写验收样例。
+
+3. 演练通过后，在批准的停写窗口停止所有 API、Bot、CLI 等写入。仍使用旧版工具生成并校验**最终v5备份**，以同一已验证的新版本命令把这个最终备份迁移为全新的v6最终副本。不要直接拿早先演练副本上线，否则会丢掉演练后的写入。
+4. 保留旧数据库和对应备份，在服务完全停止时将运行配置/数据文件切到已校验的v6最终副本；核对权限、owner、workspace、profile、timezone。不要对正在使用的 SQLite 文件做覆盖替换，也不要删除状态目录重新初始化。用新版本启动唯一实例，再验 `/readyz`、认证接口和只读 `verify_api.py`，确认 schema v6 与必需表、字段、索引就绪。
+5. 失败时保持停写并保全v6文件，恢复**旧程序加匹配的最终v5备份**，使用旧版工具恢复到新路径并核对后切回；仅回滚镜像不够，旧程序不保证可读v6。若切换后已产生新随想或账目，先另行保全并人工制定后续处理，不声称旧备份回滚无损保留这些新数据。
+
+真实环境的停写、备份、切换、恢复与远程操作需用户明确授权。迁移演练与离线测试不代表 Docker 挂载权限、真实 iLink 或公网已验收。
 
 ### 构建干净源码包
 
@@ -82,7 +114,7 @@ docker compose --env-file /opt/suikouji-state/compose.env up -d --wait --wait-ti
 python3 tools/build_release.py
 ```
 
-输出 `dist/suikouji-0.1.1-staging.tar.gz` 与 `.sha256`；已有输出拒绝覆盖，重建使用 `--output-dir` 指定新目录或 `--version` 指定新版本。归档严格按显式文件清单，含 per-file `SHA256SUMS` 和 `RELEASE.json`，不遍历 data/、.claude/、真实 .env 或凭据。Docker build context 也采用默认排除，只允许运行源码和必需网页。没有 GitHub 发布、镜像推送或服务器操作。
+输出 `dist/suikouji-0.2.0-staging.tar.gz` 与 `.sha256`；已有输出拒绝覆盖，重建使用 `--output-dir` 指定新目录或 `--version` 指定新版本。归档严格按显式文件清单，含 per-file `SHA256SUMS` 和 `RELEASE.json`，不遍历 data/、.claude/、真实 .env 或凭据。Docker build context 也采用默认排除，只允许运行源码和必需网页。没有 GitHub 发布、镜像推送或服务器操作。
 
 ## 原生 Python 运行参考
 
@@ -133,7 +165,7 @@ with closing(SqliteStore(str(path))) as store:
 PY
 ```
 
-现有库若需要升级，先用原生 backup API 生成副本，在副本上演练显式升级；停止写入服务后再安排迁移。readiness 不替旧库迁移。启动后通过 `/readyz` 验证 schema、必需表/字段、完整性和 owner/workspace 配置。真实服务器执行需要用户单独授权。
+此初始化只用于新库，直接创建v6。已有v5库按[副本迁移流程](#从-v5-升级到-v6)用旧版工具备份、新版 `python3 -m engine.deployment migrate SOURCE DESTINATION` 迁移副本，再停写、迁移最终副本并切换；不要用普通 CLI 打开真实旧库代替升级。readiness 不替旧库迁移。启动后通过 `/readyz` 验证 schema、必需表/字段/索引、完整性和 owner/workspace 配置。真实服务器执行需要用户授权。
 
 ## 备份与恢复
 
@@ -157,7 +189,7 @@ python3 -m engine.deployment restore /var/backups/suikouji/staging-001.db /var/l
 
 若外部 Grokbot/Agent 已接入iLink，推荐让它独占该Bot账号的消息接收和回复，先按 `/v1/capabilities` 的 `input_preparation` 整理，再向随口记提交 `text + structured`。此时保持本服务的三个iLink变量为空，只运行认证API。同账号不能再启动本服务worker并行拉取消息；详细的消息身份、固定请求重试与追问边界见[微信iLink入口](../docs/agent-capabilities.md#微信-ilink-入口)。
 
-下述内置worker当前直接把文本送到受控规则入口，没有模型整理层。它与外部Agent整理方案是两种接法，不能把结构化API上线描述成内置worker已经能理解任意口语。
+下述内置worker直接把文本送到受控规则入口，没有模型整理层。0.2.0-staging 有限支持明确“记个想法/记个随想”和“明天想试/下周想推新品”模式及两种账目/随想顺序，具体见[解析边界](../docs/parser-boundaries.md)；不提供自动欢迎、查询对话或多轮追问状态。它与外部Agent整理方案是两种接法，不能把结构化API上线描述成内置worker已经能理解任意口语。安装介绍须由外部Agent先核对 capabilities 和实际工作空间，再使用[冷启动约定](../docs/agent-capabilities.md#安装后介绍与冷启动)；不因无标签重复追问，partial 先说明已存及未入账部分。
 
 ## iLink worker 合同
 

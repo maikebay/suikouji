@@ -14,6 +14,7 @@ import os
 import sqlite3
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from pathlib import Path
 import math
 
 from .model import (
@@ -28,7 +29,47 @@ from .model import (
     round2,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+
+# Execute these statements inside the caller's transaction: executescript would
+# commit it before applying DDL, breaking copy migration and rollback guarantees.
+_THOUGHT_SCHEMA = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_record_workspace_id ON record(shop_id, id)",
+    """CREATE TABLE IF NOT EXISTS thoughts (
+        id TEXT PRIMARY KEY NOT NULL,
+        shop_id TEXT NOT NULL,
+        capture_id TEXT NOT NULL,
+        date TEXT NOT NULL,
+        title TEXT,
+        body TEXT NOT NULL CHECK(length(body) > 0),
+        source_quote TEXT NOT NULL CHECK(length(source_quote) > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(shop_id, id),
+        FOREIGN KEY(shop_id) REFERENCES shop(id),
+        FOREIGN KEY(shop_id, capture_id) REFERENCES record(shop_id, id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_thoughts_page
+       ON thoughts(shop_id, date DESC, created_at DESC, id DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_thoughts_capture
+       ON thoughts(shop_id, capture_id, created_at, id)""",
+    """CREATE TABLE IF NOT EXISTS thought_tags (
+        shop_id TEXT NOT NULL,
+        thought_id TEXT NOT NULL,
+        tag TEXT NOT NULL CHECK(length(tag) > 0),
+        position INTEGER NOT NULL CHECK(position >= 0),
+        PRIMARY KEY(shop_id, thought_id, tag),
+        UNIQUE(shop_id, thought_id, position),
+        FOREIGN KEY(shop_id, thought_id) REFERENCES thoughts(shop_id, id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_thought_tags_lookup
+       ON thought_tags(shop_id, tag, thought_id)""",
+)
+
+
+def _create_thought_schema(conn):
+    for statement in _THOUGHT_SCHEMA:
+        conn.execute(statement)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -235,8 +276,8 @@ CREATE TABLE IF NOT EXISTS dimension (
 """
 
 
-def database_schema_ready(conn) -> bool:
-    """只读校验全部运行字段，避免请求时构造 Store 才补列或失败。"""
+def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
+    """只读校验运行字段和随想约束；v5 校验仅供显式副本迁移使用。"""
     required = {
         "meta": "key, value",
         "shop": "id, name, created_at",
@@ -267,12 +308,83 @@ def database_schema_ready(conn) -> bool:
                        "value_text, unit, confidence, source_span, dedup_key, created_at",
         "dimension": "id, shop_id, kind, canonical, aliases, created_at",
     }
+    if expected_version not in (5, SCHEMA_VERSION):
+        return False
+    if expected_version == SCHEMA_VERSION:
+        required.update({
+            "thoughts": "id, shop_id, capture_id, date, title, body, source_quote, created_at, updated_at",
+            "thought_tags": "shop_id, thought_id, tag, position",
+        })
     try:
+        version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        if not version or version[0] != str(expected_version):
+            return False
         for table, columns in required.items():
             conn.execute(f"SELECT {columns} FROM {table} LIMIT 0")
+        if expected_version == SCHEMA_VERSION:
+            indexes = {
+                "idx_record_workspace_id": ("shop_id", "id"),
+                "idx_thoughts_page": ("shop_id", "date", "created_at", "id"),
+                "idx_thoughts_capture": ("shop_id", "capture_id", "created_at", "id"),
+                "idx_thought_tags_lookup": ("shop_id", "tag", "thought_id"),
+            }
+            for name, columns in indexes.items():
+                if tuple(row[2] for row in conn.execute(f"PRAGMA index_info({name})")) != columns:
+                    return False
+            unique_keys = {
+                "record": {("shop_id", "id")},
+                "thoughts": {("id",), ("shop_id", "id")},
+                "thought_tags": {("shop_id", "thought_id", "tag"),
+                                 ("shop_id", "thought_id", "position")},
+            }
+            for table, expected in unique_keys.items():
+                actual = set()
+                for index in conn.execute(f"PRAGMA index_list({table})").fetchall():
+                    if index[2] and not index[4]:
+                        columns = conn.execute("SELECT name FROM pragma_index_info(?) ORDER BY seqno",
+                                               (index[1],)).fetchall()
+                        actual.add(tuple(column[0] for column in columns))
+                if not expected <= actual:
+                    return False
+            foreign_keys = {
+                "thoughts": {(("shop", "shop_id", "id"),),
+                             (("record", "shop_id", "shop_id"),
+                              ("record", "capture_id", "id"))},
+                "thought_tags": {(("thoughts", "shop_id", "shop_id"),
+                                  ("thoughts", "thought_id", "id"))},
+            }
+            for table, expected in foreign_keys.items():
+                groups = {}
+                for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
+                    groups.setdefault(row[0], []).append((row[2], row[3], row[4]))
+                if set(tuple(group) for group in groups.values()) != expected:
+                    return False
+                if conn.execute(f"PRAGMA foreign_key_check({table})").fetchone():
+                    return False
         return True
     except sqlite3.Error:
         return False
+
+
+def migrate_v5_to_v6(conn):
+    """显式迁移已校验的 v5 连接；失败时 DDL 和版本号一起回滚。"""
+    if not database_schema_ready(conn, expected_version=5):
+        raise ValueError("迁移源必须是完整的 v5 数据库")
+    if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+        raise ValueError("迁移源完整性检查失败")
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name IN ('thoughts', 'thought_tags')").fetchone():
+        raise ValueError("v5 数据库已有随想表，请核对迁移状态")
+    conn.execute("SAVEPOINT thoughts_v6")
+    try:
+        _create_thought_schema(conn)
+        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
+        if not database_schema_ready(conn):
+            raise ValueError("迁移后数据库未就绪")
+        conn.execute("RELEASE thoughts_v6")
+    except BaseException:
+        conn.execute("ROLLBACK TO thoughts_v6")
+        conn.execute("RELEASE thoughts_v6")
+        raise
 
 
 def default_db_path() -> str:
@@ -428,7 +540,8 @@ class Store(ABC):
     def record_timeline(self, shop_id: str, *, q: str = "", start: str | None = None,
                         end: str | None = None, parse_status: str | None = None,
                         source: str | None = None, page_size: int = 30,
-                        before: tuple[str, str, str] | None = None) -> dict: ...
+                        before: tuple[str, str, str] | None = None,
+                        types: str | None = None) -> dict: ...
 
     @abstractmethod
     def record_detail(self, shop_id: str, record_id: str) -> dict | None: ...
@@ -444,6 +557,20 @@ class Store(ABC):
     def record_set_routing(self, record_id: str, *, intent: str | None = None,
                            context: str | None = None, profile_id: str | None = None,
                            routing_status: str | None = None) -> bool: ...
+
+    # ---------------------------------------------------------- 随想
+
+    @abstractmethod
+    def thought_add(self, shop_id: str, capture_id: str, rows: list) -> list: ...
+
+    @abstractmethod
+    def thought_for_record(self, shop_id: str, capture_id: str) -> list: ...
+
+    @abstractmethod
+    def thought_list(self, shop_id: str, *, start: str | None = None,
+                     end: str | None = None, tags: list | None = None, q: str = "",
+                     page_size: int = 30,
+                     before: tuple[str, str, str] | None = None) -> dict: ...
 
     # ---------------------------------------------------------- 观测层
 
@@ -523,19 +650,37 @@ class Store(ABC):
 
 
 class SqliteStore(Store):
-    def __init__(self, path: str | None = None):
+    def __init__(self, path: str | None = None, *, migrate: bool = True):
+        """CLI 兼容旧库；API/runtime 可用 migrate=False 强制只打开已就绪库。"""
         self.path = path or default_db_path()
         if self.path != ":memory:":
+            if not migrate and not os.path.isfile(self.path):
+                raise ValueError("数据库未就绪，必须先显式初始化或迁移")
             os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         self._transaction_depth = 0
-        self.conn = sqlite3.connect(self.path)
+        if not migrate and self.path != ":memory:":
+            self.conn = sqlite3.connect(Path(self.path).absolute().as_uri() + "?mode=rw", uri=True)
+        else:
+            self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
-        existing_meta = self.conn.execute("SELECT name FROM sqlite_master WHERE name='meta'").fetchone()
-        if existing_meta:
-            version = self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            if version and int(version[0]) > SCHEMA_VERSION:
-                self.close()
-                raise ValueError('数据库版本高于当前程序，请使用较新版本')
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        self.conn.create_function("unicode_casefold", 1, lambda value: (value or "").casefold())
+        try:
+            if database_schema_ready(self.conn):
+                return
+            if not migrate:
+                raise ValueError("数据库未就绪，必须先显式初始化或迁移")
+            if database_schema_ready(self.conn, expected_version=5):
+                migrate_v5_to_v6(self.conn)
+                return
+            existing_meta = self.conn.execute("SELECT name FROM sqlite_master WHERE name='meta'").fetchone()
+            if existing_meta:
+                version = self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+                if version and int(version[0]) > SCHEMA_VERSION:
+                    raise ValueError('数据库版本高于当前程序，请使用较新版本')
+        except BaseException:
+            self.close()
+            raise
         self.conn.executescript(_SCHEMA)
         # 增量迁移仅增加字段，旧字段值及原话关联保留。
         additions = {
@@ -607,6 +752,8 @@ class SqliteStore(Store):
                 self.conn.execute(
                     "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                     (str(SCHEMA_VERSION),))
+        with self.transaction():
+            _create_thought_schema(self.conn)
 
     def close(self) -> None:
         self.conn.close()
@@ -1302,7 +1449,7 @@ class SqliteStore(Store):
         return entries, sales, malformed + missing_entries + missing_sales
 
     @staticmethod
-    def _search_values(record, entries, sales, observations):
+    def _search_values(record, entries, sales, observations, thoughts):
         values = [record.get("raw_text"), record.get("source"), record.get("peer"),
                   record.get("correction_detail")]
         for row in entries:
@@ -1314,9 +1461,12 @@ class SqliteStore(Store):
         for row in observations:
             values.extend(row.get(name) for name in
                           ("kind", "subject", "measure", "unit", "value_text"))
+        for row in thoughts:
+            values.extend((row.get("title"), row["body"]))
+            values.extend(row["tags"])
         return " ".join(str(value) for value in values if value not in (None, ""))
 
-    def _timeline_item(self, shop_id, record):
+    def _timeline_item(self, shop_id, record, thoughts=None):
         entries, sales, unresolved = self._linked_rows(shop_id, record)
         observations = self._rows(self.conn.execute(
             "SELECT * FROM observation WHERE shop_id=? AND record_id=?"
@@ -1327,11 +1477,18 @@ class SqliteStore(Store):
         correction_count = sum(len(self.corrections_for(shop_id, target))
                                for target in dict.fromkeys(x for x in target_ids if x))
         event_time = self._event_key(record)[0]
+        if thoughts is None:
+            thoughts = self.thought_for_record(shop_id, record["id"])
         return {
             "record": record,
             "event_time": event_time,
             "projection_counts": {"entries": len(entries), "sales": len(sales),
-                                   "observations": len(observations)},
+                                   "observations": len(observations), "thoughts": len(thoughts)},
+            "thought_preview": [
+                {"id": row["id"], "date": row["date"], "body": row["body"][:120],
+                 "tags": row["tags"], **({"title": row["title"]} if "title" in row else {})}
+                for row in thoughts[:3]
+            ],
             "correction_count": correction_count,
             "ledger_preview": [
                 {"kind": "entry", "id": row["id"], "date": row.get("date"),
@@ -1347,8 +1504,10 @@ class SqliteStore(Store):
         }
 
     def record_timeline(self, shop_id, *, q="", start=None, end=None,
-                        parse_status=None, source=None, page_size=30, before=None):
+                        parse_status=None, source=None, page_size=30, before=None, types=None):
         """返回只读原话收件箱；不改变旧 record_list 的日期/顺序契约。"""
+        if types not in (None, "thought"):
+            raise ValueError("原话类型筛选仅支持 thought")
         rows = self._rows(self.conn.execute(
             "SELECT * FROM record WHERE shop_id=?", (shop_id,)))
         q_fold = str(q or "").casefold()
@@ -1364,13 +1523,16 @@ class SqliteStore(Store):
                 continue
             if source and record.get("source") != source:
                 continue
-            item = self._timeline_item(shop_id, record)
+            thoughts = self.thought_for_record(shop_id, record["id"])
+            if types == "thought" and not thoughts:
+                continue
+            item = self._timeline_item(shop_id, record, thoughts)
             if q_fold:
                 entries, sales, _ = self._linked_rows(shop_id, record)
                 observations = self._rows(self.conn.execute(
                     "SELECT * FROM observation WHERE shop_id=? AND record_id=?",
                     (shop_id, record["id"])))
-                if q_fold not in self._search_values(record, entries, sales, observations).casefold():
+                if q_fold not in self._search_values(record, entries, sales, observations, thoughts).casefold():
                     continue
             if before is not None and self._event_key(record) >= tuple(str(x) for x in before):
                 continue
@@ -1422,6 +1584,7 @@ class SqliteStore(Store):
                     corrections.append(correction)
         corrections.sort(key=lambda row: (row.get("created_at") or "", row["id"]))
         return {"record": record, "entries": entries, "sales": sales,
+                "thoughts": self.thought_for_record(shop_id, record_id),
                 "observations": observations, "corrections": corrections,
                 "correction_target": correction_target, "warnings": warnings}
 
@@ -1451,6 +1614,88 @@ class SqliteStore(Store):
                                 [*sets.values(), record_id])
         self._commit()
         return cur.rowcount > 0
+
+    # ------------------------------------------------------------ 随想
+
+    def thought_add(self, shop_id, capture_id, rows):
+        """保存调用方校验后的随想；来源、归属和整批原子性由存储层兜底。"""
+        ids = []
+        with self.transaction():
+            record = self.conn.execute(
+                "SELECT raw_text FROM record WHERE shop_id=? AND id=?",
+                (shop_id, capture_id)).fetchone()
+            if record is None:
+                raise ValueError("随想必须引用当前工作空间的原话")
+            for row in rows:
+                quote = row.get("source_quote")
+                if not isinstance(quote, str) or not quote.strip() or quote not in record[0]:
+                    raise ValueError("随想来源必须是原话中的非空连续片段")
+                thought_id, timestamp = new_id("th"), now_iso()
+                self.conn.execute(
+                    """INSERT INTO thoughts(id, shop_id, capture_id, date, title, body,
+                                            source_quote, created_at, updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (thought_id, shop_id, capture_id, row["date"], row.get("title"),
+                     row["body"], quote, timestamp, timestamp))
+                for position, tag in enumerate(row.get("tags", [])):
+                    self.conn.execute(
+                        "INSERT INTO thought_tags(shop_id, thought_id, tag, position) VALUES(?,?,?,?)",
+                        (shop_id, thought_id, tag, position))
+                ids.append(thought_id)
+        return ids
+
+    def _public_thoughts(self, rows):
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["workspace_id"] = item.pop("shop_id")
+            if item["title"] is None:
+                item.pop("title")
+            item["tags"] = [tag[0] for tag in self.conn.execute(
+                "SELECT tag FROM thought_tags WHERE shop_id=? AND thought_id=? ORDER BY position",
+                (item["workspace_id"], item["id"]))]
+            result.append(item)
+        return result
+
+    def thought_for_record(self, shop_id, capture_id):
+        return self._public_thoughts(self.conn.execute(
+            "SELECT * FROM thoughts WHERE shop_id=? AND capture_id=? ORDER BY created_at, rowid",
+            (shop_id, capture_id)).fetchall())
+
+    def thought_list(self, shop_id, *, start=None, end=None, tags=None, q="",
+                     page_size=30, before=None):
+        if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 100:
+            raise ValueError("每页数量必须是 1～100 的整数")
+        if before is not None and (not isinstance(before, (tuple, list)) or len(before) != 3
+                                   or not all(isinstance(value, str) for value in before)):
+            raise ValueError("随想分页位置不正确")
+        clauses, args = ["t.shop_id=?"], [shop_id]
+        if start:
+            clauses.append("t.date>=?")
+            args.append(start)
+        if end:
+            clauses.append("t.date<=?")
+            args.append(end)
+        for tag in dict.fromkeys(tags or []):
+            clauses.append("EXISTS (SELECT 1 FROM thought_tags g WHERE g.shop_id=t.shop_id "
+                           "AND g.tag=? AND g.thought_id=t.id)")
+            args.append(tag)
+        if q:
+            clauses.append("(instr(unicode_casefold(t.title), ?) > 0 "
+                           "OR instr(unicode_casefold(t.body), ?) > 0)")
+            args.extend([q.casefold(), q.casefold()])
+        if before is not None:
+            clauses.append("(t.date, t.created_at, t.id) < (?, ?, ?)")
+            args.extend(before)
+        rows = self.conn.execute(
+            "SELECT t.* FROM thoughts t WHERE " + " AND ".join(clauses) +
+            " ORDER BY t.date DESC, t.created_at DESC, t.id DESC LIMIT ?",
+            [*args, page_size + 1]).fetchall()
+        has_more = len(rows) > page_size
+        page = self._public_thoughts(rows[:page_size])
+        return {"items": page, "has_more": has_more,
+                "next_before": tuple(page[-1][key] for key in ("date", "created_at", "id"))
+                if has_more else None}
 
     # ------------------------------------------------------------ 观测层
 
@@ -1706,11 +1951,16 @@ class SqliteStore(Store):
         return cur.rowcount == 1
 
     def export_all(self, shop_id):
-        """全量导出，供以后同步到云端用。"""
+        """单工作空间原始表快照（含控制行）；不是可直接导入的完整库备份。
+
+        thoughts 使用存储字段 shop_id，thought_tags 单独保留 position。
+        整库恢复（含 meta、所有工作空间）使用 SQLite backup/restore。
+        """
         tables = ["shop", "entry", "product", "ingredient", "recipe_line",
                   "sale", "discrepancy", "import_batch",
                   'record', 'observation', 'dimension', 'recipe_version', 'import_identity',
-                  'workspace_meta', 'agent_request', 'agent_import_preview']
+                  'workspace_meta', 'agent_request', 'agent_import_preview',
+                  'thoughts', 'thought_tags']
         out = {"schema_version": SCHEMA_VERSION, "shop_id": shop_id, "tables": {}}
         for t in tables:
             if t == "shop":
@@ -1719,6 +1969,9 @@ class SqliteStore(Store):
                 cur = self.conn.execute(f"SELECT * FROM {t} WHERE shop_id=?", (shop_id,))
             elif t in ("agent_request", "agent_import_preview"):
                 cur = self.conn.execute(f"SELECT * FROM {t} WHERE workspace_id=?", (shop_id,))
+            elif t == "thought_tags":
+                cur = self.conn.execute(
+                    "SELECT * FROM thought_tags WHERE shop_id=? ORDER BY thought_id, position", (shop_id,))
             else:
                 cur = self.conn.execute(f"SELECT * FROM {t} WHERE shop_id=?", (shop_id,))
             out["tables"][t] = self._rows(cur)

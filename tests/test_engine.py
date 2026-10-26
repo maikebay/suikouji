@@ -517,7 +517,8 @@ class TestCliEndToEnd(TempDb):
     def test_unparsed_does_not_write_and_hands_off(self):
         before = run_cli(*self._args("entries"))
         out = run_cli(*self._args("record", "嗯好的"))
-        self.assertIn("add-json", out)          # 明确告诉上层下一步怎么做
+        self.assertIn("未入账", out)            # 用业务语言说明结果和核对方式
+        self.assertNotIn("add-json", out)
         after = run_cli(*self._args("entries"))
         self.assertEqual(before, after)         # 没有偷偷写入
 

@@ -69,7 +69,7 @@ class StructuredCaptureTests(unittest.TestCase):
         self.assertEqual(result["capture"]["peer"], "sender")
         self.assertEqual(result["capture"]["received_at"], RECEIVED)
         self.assertEqual(result["capture"]["occurred_at"], "2026-10-25")
-        self.assertEqual(result["capture"]["parser_version"], "agent-structured-1")
+        self.assertEqual(result["capture"]["parser_version"], "agent-structured-2")
         self.assertEqual([(e["type"], e["amount"], e["category"], e["granularity"])
                           for e in result["entries"]], [("revenue", 1300, "营业额", "daily")])
         self.assertEqual(result["entries"][0]["note"], before["entries"][0]["source_quote"])
@@ -78,7 +78,7 @@ class StructuredCaptureTests(unittest.TestCase):
                          [("天气", "阴")])
         self.assertEqual(len(result["observations"]), 2)
         self.assertEqual(result["parsed"]["leftovers"], before["leftovers"])
-        self.assertEqual(result["normalization"], before)
+        self.assertEqual(result["normalization"], {**before, "thoughts": []})
         self.assertEqual(payload(), before)
         self.assertEqual(json.loads(result["capture"]["ledger_refs"]), ["entry:" + result["entries"][0]["id"]])
         self.assertEqual(self.service.summary(PRINCIPAL, "shop", "2026-10")["revenue"], 1300)
@@ -326,7 +326,7 @@ class StructuredCaptureTests(unittest.TestCase):
         self.assertEqual(result["sales"][0]["product_name"], "招牌牛肉面")
         quantity = next(o for o in result["observations"] if o["kind"] == "进货" and o["measure"] == "数量")
         self.assertEqual((quantity["value_num"], quantity["unit"]), (2.5, "kg"))
-        self.assertEqual(result["normalization"], data)
+        self.assertEqual(result["normalization"], {**data, "thoughts": []})
 
     def test_old_terminal_and_pending_evidence_are_never_reprojected(self):
         for status in ("parsed", "partial", "rejected", "parsing", "pending"):

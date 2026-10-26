@@ -180,9 +180,11 @@ class WorkerLifecycleTests(TemporaryRuntimeTest):
         actions = []
 
         class TrackingStore(SqliteStore):
-            def __init__(self, path):
+            def __init__(self, path, *, migrate=True):
                 actions.append(("open", threading.get_ident()))
-                super().__init__(path)
+                if migrate:
+                    raise AssertionError("runtime worker must never migrate")
+                super().__init__(path, migrate=migrate)
 
             def close(self):
                 actions.append(("close", threading.get_ident()))

@@ -6,6 +6,7 @@ import base64
 import hmac
 import json
 import logging
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
@@ -83,7 +84,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         return Principal(str(principal_id), str(owner_id))
 
     def _v1_store(self):
-        return SqliteStore(str(self.server.db_path))
+        return SqliteStore(str(self.server.db_path), migrate=False)
 
     def _ready_probe(self):
         path = Path(self.server.db_path).resolve()
@@ -156,15 +157,28 @@ class DemoHandler(BaseHTTPRequestHandler):
         if not workspace:
             raise AgentError("workspace_required", "必须指定 workspace_id")
         workspace = self._check_workspace(workspace)
+        if path == "/v1/thoughts":
+            params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            allowed = {"workspace_id", "start", "end", "tag", "q", "page_size", "before"}
+            if params.keys() - allowed or any(len(values) != 1 for key, values in params.items() if key != "tag"):
+                raise AgentError("invalid_query", "随想查询含未支持或重复的参数")
+            fields = {key: values[0] for key, values in params.items() if key not in {"workspace_id", "tag"}}
+            fields["tags"] = params.get("tag", [])
+            return self._send(200, service.thoughts(principal, workspace, **fields))
         if path == "/v1/timeline":
             fields = {key: query[key] for key in ("q", "start", "end", "parse_status", "source") if key in query}
+            type_values = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get("types")
+            if type_values is not None:
+                if type_values != ["thought"]:
+                    raise AgentError("invalid_types", "types 只支持 thought")
+                fields["types"] = "thought"
             if "page_size" in query:
                 fields["page_size"] = query["page_size"]
-            if "before" in query:
-                try:
-                    fields["before"] = tuple(query["before"].split("|", 2))
-                except Exception as exc:
-                    raise AgentError("invalid_cursor", "before 游标格式不正确") from exc
+            before_values = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get("before")
+            if before_values is not None:
+                if len(before_values) != 1:
+                    raise AgentError("invalid_cursor", "before 游标格式不正确")
+                fields["before"] = tuple(before_values[0].split("|"))
             return self._send(200, service.timeline(principal, workspace, **fields))
         if path == "/v1/summary":
             return self._send(200, {"summary": service.summary(principal, workspace, query.get("month"))})
@@ -219,7 +233,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             "/v1/capabilities": "GET", "/v1/workspaces": "GET",
             "/v1/captures": "POST", "/v1/timeline": "GET",
             "/v1/summary": "GET", "/v1/entries": "GET",
-            "/v1/sales": "GET", "/v1/observations": "GET",
+            "/v1/sales": "GET", "/v1/observations": "GET", "/v1/thoughts": "GET",
             "/v1/reviews": "GET, POST",
             "/v1/imports/preview": "POST", "/v1/imports/commit": "POST",
         }.get(path)
@@ -329,15 +343,17 @@ class DemoHandler(BaseHTTPRequestHandler):
             return self._send(200, (ROOT / "web" / "demo.html").read_bytes(), "text/html; charset=utf-8")
         if path == "/api/capabilities":
             return self._send(200, product_capabilities())
+        if path.startswith("/api/") and not self._ready_probe()[0]:
+            return self._send(503, {"error": "账本尚未就绪，请先备份并显式迁移，接口不会自动升级。"})
         if path == "/api/workspaces":
-            store = SqliteStore(str(self.server.db_path))
+            store = SqliteStore(str(self.server.db_path), migrate=False)
             try:
                 owner = parse_qs(urlsplit(self.path).query).get("owner", ["local"])[0]
                 return self._send(200, {"workspaces": store.workspace_list(owner)})
             finally:
                 store.close()
         if path == "/api/timeline":
-            store = SqliteStore(str(self.server.db_path))
+            store = SqliteStore(str(self.server.db_path), migrate=False)
             try:
                 query = parse_qs(urlsplit(self.path).query)
                 workspace = query.get("workspace", [SHOP])[0]
@@ -360,7 +376,7 @@ class DemoHandler(BaseHTTPRequestHandler):
                 store.close()
         if path.startswith("/api/records/"):
             record_id = path.rsplit("/", 1)[-1]
-            store = SqliteStore(str(self.server.db_path))
+            store = SqliteStore(str(self.server.db_path), migrate=False)
             try:
                 detail = store.record_detail(SHOP, record_id)
                 return self._send(200 if detail else 404,
@@ -368,7 +384,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             finally:
                 store.close()
         if path == "/api/state":
-            store = SqliteStore(str(self.server.db_path))
+            store = SqliteStore(str(self.server.db_path), migrate=False)
             try:
                 month = parse_qs(urlsplit(self.path).query).get('month', [None])[0]
                 if month is not None and not re.fullmatch(r'[0-9]{4}-[0-9]{2}', month):
@@ -413,6 +429,8 @@ class DemoHandler(BaseHTTPRequestHandler):
         if path not in ('/api/records', '/api/review', '/api/recipes',
                         '/api/import/preview', '/api/import/commit'):
             return self._send(404, {"error": "没有这个接口。"})
+        if not self._ready_probe()[0]:
+            return self._send(503, {"error": "账本尚未就绪，请先备份并显式迁移，接口不会自动升级。"})
         if self.headers.get_content_type() != "application/json":
             return self._send(415, {"error": "需要 JSON 格式。"})
         try:
@@ -437,7 +455,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             # RecursionError：深层嵌套的 JSON 会让 json.loads 栈溢出。
             # 接不住的话连接会被直接掐断，客户端只看到网络错误，拿不到任何文案。
             return self._send(400, {"error": "无法读取这条记录，请刷新页面后重试。"})
-        store = SqliteStore(str(self.server.db_path))
+        store = SqliteStore(str(self.server.db_path), migrate=False)
         try:
             store.ensure_shop(SHOP, "网页测试店")
             if path == '/api/review':
@@ -504,8 +522,21 @@ def make_server(port=8765, db_path=None, *, api_key=None, owner_id="local",
                 principal_id="agent", bind="127.0.0.1", workspace_id="", api_only=False):
     if bind not in ("127.0.0.1", "localhost", "::1") and len(api_key or "") < 16:
         raise ValueError("非回环监听的 API key 至少需要 16 个字符")
+    path = Path(db_path) if db_path else ROOT / "data" / "web-demo.db"
+    # Local demo setup may create a new ledger before serving. Existing files
+    # are never opened by a migrating constructor, including a concurrent init.
+    if not api_only and not os.path.lexists(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".demo-init-", dir=path.parent) as temporary:
+            initialized = Path(temporary) / "new.db"
+            store = SqliteStore(str(initialized))
+            store.close()
+            try:
+                os.link(initialized, path)
+            except FileExistsError:
+                pass
     server = HTTPServer((bind, port), DemoHandler)
-    server.db_path = Path(db_path) if db_path else ROOT / "data" / "web-demo.db"
+    server.db_path = path
     server.api_key = api_key or ""
     server.owner_id = owner_id
     server.principal_id = principal_id

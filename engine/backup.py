@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
-from .store import SCHEMA_VERSION
+from .store import SCHEMA_VERSION, database_schema_ready
 
 
 def _readonly(path: str):
@@ -38,11 +38,12 @@ def inspect_database(path: str, *, expected_version: int = SCHEMA_VERSION) -> di
                 version = int(version_row[0]) if version_row else None
             except (TypeError, ValueError):
                 version = None
+            schema_ok = version == expected_version and database_schema_ready(conn, expected_version=expected_version)
             result.update({
                 "integrity": integrity,
                 "schema_version": version,
-                "schema_ok": version == expected_version,
-                "ok": integrity == "ok" and version == expected_version,
+                "schema_ok": schema_ok,
+                "ok": integrity == "ok" and schema_ok,
             })
             if not result["ok"]:
                 result["reason"] = "database_not_ready"
