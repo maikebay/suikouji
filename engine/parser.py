@@ -812,6 +812,27 @@ def detect_query(text: str) -> str | None:
 # ---------------------------------------------------------------- 对外
 
 
+def mask_sale_projections(text, sales, base=None):
+    """共享销量与冲突付款的等长遮罩，供财务解析及原文来源还原使用。"""
+    unresolved = []
+    for index, sale in enumerate(sales):
+        if sale['amount'] is None:
+            continue
+        cursor = sale['end']
+        limit = sales[index + 1]['start'] if index + 1 < len(sales) else len(text)
+        while True:
+            extra = _sale_payment(text, cursor, limit, base)
+            if not extra:
+                break
+            unresolved.append({'start': cursor, 'end': extra[1]})
+            cursor = extra[1]
+    work = _mask(text, sales + unresolved)
+    # 日期保留原位，以便后续账目按原文顺序继承。
+    for token in find_dates(text, base):
+        work = work[:token['start']] + text[token['start']:token['end']] + work[token['end']:]
+    return work, unresolved
+
+
 def parse(text: str, base: _dt.date | None = None, extra_mask=None) -> dict:
     """解析一句口语。永远返回 dict，认不出时 intent='unknown'。
 
@@ -834,23 +855,8 @@ def parse(text: str, base: _dt.date | None = None, extra_mask=None) -> dict:
     # 非金额观测先认领，避免其数字或主体又被销量规则重复识别。
     masked = _mask(text, extra_mask or [])
     sales = find_sales(masked, base)
-    unresolved_sales = []
-    for index, sale in enumerate(sales):
-        if sale['amount'] is None:
-            continue
-        cursor = sale['end']
-        limit = sales[index + 1]['start'] if index + 1 < len(sales) else len(masked)
-        while True:
-            extra = _sale_payment(masked, cursor, limit, base)
-            if not extra:
-                break
-            # 单价和合计同时出现时不静默覆盖；额外金额也不能兜底成支出。
-            unresolved_sales.append({'start': cursor, 'end': extra[1]})
-            cursor = extra[1]
-    work_text = _mask(masked, sales + unresolved_sales)
-    # 销量遮蔽不能吃掉日期的后续作用域；保留等长原位日期供账目顺序继承。
-    for date in find_dates(masked, base):
-        work_text = work_text[:date['start']] + masked[date['start']:date['end']] + work_text[date['end']:]
+    # 单价和合计同时出现时不静默覆盖；额外金额也不能兜底成支出。
+    work_text, unresolved_sales = mask_sale_projections(masked, sales, base)
 
     entries = []
     leftovers = [text[s['start']:s['end']].strip(' ，,、') for s in unresolved_sales]

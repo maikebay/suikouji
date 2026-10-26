@@ -138,28 +138,47 @@ class ILinkBotWorker:
 
     @staticmethod
     def format_reply(receipt: dict) -> str:
-        if receipt.get("status") == "needs_confirmation":
-            return "我先保存了原话，但当前工作空间不是餐饮 profile，暂不自动入账。请确认这是记事、项目还是哪类经营记录。"
-        if receipt.get("status") == "rejected":
-            return "原话已保存，但日期或金额格式未通过校验，未写入账目。请核对后重新发送。"
-        if receipt.get("duplicate"):
-            return "这条消息已经记录过了，没有重复入账。"
+        status = receipt.get("status")
+        if status == "needs_confirmation":
+            return "原话已保存。当前账本的行业尚不支持自动记录账目和随想，需要先确认适用的记录方式。"
+        if status == "rejected":
+            return "原话已保存，但日期或金额等内容未通过校验，账目和随想均未写入，请先核对。"
+        if status not in {"parsed", "partial", "unparsed"}:
+            return "暂时没拿到结果，正在核对。"
         entries = receipt.get("entries") or []
         sales = receipt.get("sales") or []
         observations = receipt.get("observations") or []
-        status = receipt.get("status") or "pending"
-        if not entries and not sales and not observations:
-            return f"原话已保存（{status}），暂时没有安全识别出的账目。"
-        parts = [f"已记录（{status}）："]
+        thoughts = receipt.get("thoughts") or []
+        leftovers = (receipt.get("parsed") or {}).get("leftovers") or []
+        parts = []
+        if receipt.get("duplicate"):
+            parts.append("这条消息已记录，没有重复入账或保存。")
+        saved = []
         if entries:
-            parts.append(f"账目 {len(entries)} 条")
+            saved.append(f"账目 {len(entries)} 条")
         if sales:
-            parts.append(f"销量 {len(sales)} 条")
+            saved.append(f"销量 {len(sales)} 条")
         if observations:
-            parts.append(f"经营观测 {len(observations)} 条")
-        if receipt.get("warnings"):
-            parts.append("有待核对提示，请在网页中查看")
-        return "，".join(parts)
+            saved.append(f"经营观测 {len(observations)} 条")
+        if saved:
+            parts.append("已记录：" + "、".join(saved) + "。")
+        if thoughts:
+            dates = sorted({row["date"] for row in thoughts if row.get("date")})
+            date_label = (dates[0] if len(dates) == 1 else f"{dates[0]}至{dates[-1]}") if dates else ""
+            parts.append(f"已保存 {len(thoughts)} 条随想" + (f"（记录日：{date_label}）" if date_label else "") + "。")
+        if not saved and not thoughts and not receipt.get("duplicate"):
+            parts.append("原话已保存，暂未识别出可单独记录的账目或随想。")
+        if leftovers:
+            parts.append("以下片段尚待核对，涉及的金额未入账：" + "；".join(f"“{text}”" for text in leftovers) + "。")
+        elif status == "partial":
+            parts.append("还有部分内容待核对，未处理部分涉及的金额未入账。")
+        if leftovers or status == "unparsed":
+            parts.append("未识别的内容可交给已连接的外部助手整理；请先核对已有记录，不要重发整段原话。")
+        if any("归档日" in str(warning) for warning in receipt.get("warnings") or []):
+            parts.append("指定随想归档日需要外部助手整理，相关随想尚未保存。")
+        elif receipt.get("warnings"):
+            parts.append("另有待核对提示，请核对已保存内容。")
+        return "".join(parts)
 
     def _send_reply(self, peer: str, text: str):
         token = self.state.get_context_token(peer)
@@ -290,7 +309,7 @@ def build_worker(db_path: str, client: ILinkClient, state_path: str, *,
                  account_id: str | None = None, database_lock=None):
     # 状态先校验，避免配置错误时打开数据库；构造失败也由当前线程关闭连接。
     state = StateStore(state_path, account_id=account_id or principal.id)
-    store = SqliteStore(db_path)
+    store = SqliteStore(db_path, migrate=False)
     try:
         return ILinkBotWorker(client, store, state, principal=principal,
                               workspace_id=workspace_id, allowed_peers=allowed_peers,

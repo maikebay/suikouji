@@ -11,8 +11,9 @@ import re
 
 from . import parser
 from .model import SOURCE_CHAT, canon_unit
+from .thoughts import extract_native, mask_spans, receipt_date, source_segments
 
-PARSER_VERSION = "observe-1"
+PARSER_VERSION = "observe-thoughts-2"
 KIND_BY_TYPE = {"revenue": "营业额", "purchase": "进货", "expense": "支出"}
 NUMBER = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万]+)"
 TIME = r"(?:大前天|前天|昨天|昨日|今天|今日|明天|当天)"
@@ -142,15 +143,106 @@ def dedup_keys(rows):
     return out
 
 
+def _restore_source_slices(text, parsed, observations, base):
+    """旧 parser 的摘要含等长观测遮罩；用偏移映射还原来源，不改财务判断。"""
+    chars = list(text)
+    for span in observations:
+        chars[span["start"]:span["end"]] = " " * (span["end"] - span["start"])
+    masked, unresolved = parser.mask_sale_projections("".join(chars), parsed["sales"], base)
+    claimed = observations + parsed["sales"] + unresolved
+    # split_clauses 去掉千位逗号，但它的原文位置仍需保留。
+    commas = {match.start() + 1 for match in re.finditer(r"(\d),(\d{3})", masked)}
+    offsets = [index for index in range(len(text)) if index not in commas]
+    view = "".join(masked[index] for index in offsets)
+    for field, fragments in (("note", parsed["entries"]),
+                             ("leftover", [{"leftover": value} for value in parsed.get("leftovers", [])])):
+        cursor, restored = 0, []
+        for row in fragments:
+            fragment = row[field]
+            start = view.find(fragment, cursor)
+            if start < 0:
+                start = view.find(fragment)
+            if start < 0:
+                restored.append(fragment)
+                continue
+            end = start + len(fragment)
+            lower, upper = offsets[start], offsets[end - 1] + 1
+            cursor = end
+            if field == "note":
+                row[field] = text[lower:upper]
+            else:
+                for left, right in source_segments(text, claimed):
+                    piece = text[max(lower, left):min(upper, right)].strip() if left < upper and right > lower else ""
+                    if piece:
+                        restored.append(piece)
+        if field == "leftover":
+            parsed["leftovers"] = restored
+
+
+def _parse_native(text, base, native):
+    """解析连续原文段，日期按原文顺序继承，销量索引仍指向完整原话。"""
+    date_text = mask_spans(text, native["note_spans"])
+    dates = parser.find_dates(date_text, base)
+    parsed = {"intent": "unknown", "entries": [], "sales": [], "leftovers": [], "raw": text}
+    found = []
+    for lower, upper in source_segments(text, native["spans"]):
+        source = text[lower:upper]
+        lower += len(source) - len(source.lstrip())
+        source = source.strip()
+        if not source:
+            continue
+        prior = [token for token in dates if token["end"] <= lower]
+        # 用独立日期句传递继承值，不能改 base，否则后文“昨天”会相对昨天再减一天。
+        prefix = prior[-1]["date"] + "。" if prior else ""
+        work = prefix + source
+        hits = find_observations(work, base.isoformat())
+        result = parser.parse(work, base, extra_mask=hits)
+        _restore_source_slices(work, result, hits, base)
+        offset = lower - len(prefix)
+        for hit in hits:
+            found.append({**hit, "start": hit["start"] + offset, "end": hit["end"] + offset})
+        parsed["entries"].extend(result["entries"])
+        parsed["sales"].extend({**sale, "start": sale["start"] + offset,
+                                "end": sale["end"] + offset} for sale in result["sales"])
+        parsed["leftovers"].extend(result.get("leftovers", []))
+        if result["intent"] != "unknown":
+            parsed["intent"] = result["intent"]
+        for field in ("date", "confidence", "period"):
+            if field in result:
+                parsed.setdefault(field, result[field])
+    if parsed["entries"] or parsed["sales"]:
+        parsed["intent"] = "entries" if parsed["entries"] else "sales"
+    return parsed, found
+
+
 def _save_record(store, shop_id, text, *, source=SOURCE_CHAT, peer=None, dedup_ref=None,
                  received_at=None, base=None, media=None, context=None,
                  intent=None, routing_status=None, profile_id=None):
     text = str(text or "")
-    base = base or (dt.date.fromisoformat(received_at[:10]) if received_at else dt.date.today())
+    if dedup_ref:
+        existing = store.record_find(shop_id, dedup_ref)
+        if existing:
+            return {**existing, "duplicate": True}
+    workspace = store.workspace_get(shop_id) or {}
+    # 接收时刻和本地日期在首次原话持久化时固定，pending 重试只读取旧基准。
+    received_at = received_at or dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    base = base or dt.date.fromisoformat(receipt_date(received_at, workspace.get("timezone", "local")))
+    native = extract_native(text, base.isoformat(), observation_finder=find_observations)
+    visible = mask_spans(text, native["note_spans"])
+    occurred_at = _date_at(visible, len(visible), base)
+    if native["thoughts"]:
+        # Store 尚无修改事件日的公开接口，首次存原话时先计算日期。
+        # 不在此写投影；非法旧领域输入仍在保存原话后的事务内统一拒绝。
+        try:
+            financial, found = _parse_native(text, base, native)
+            if not (financial["entries"] or financial["sales"] or found):
+                occurred_at = base.isoformat()
+        except (ValueError, TypeError, OverflowError):
+            pass
     media = media or {}
     return store.record_add(
         shop_id, text, source=source, peer=peer, dedup_ref=dedup_ref,
-        occurred_at=_date_at(text, len(text), base), received_at=received_at,
+        occurred_at=occurred_at, received_at=received_at,
         parse_base_date=base.isoformat(), context=context, intent=intent,
         routing_status=routing_status, profile_id=profile_id,
         media_path=media.get("path"), media_sha256=media.get("sha256"))
@@ -183,7 +275,12 @@ def observe(store, shop_id, text, *, _record=None, **fields):
         raise ValueError('这条原话的金额或格式不合法，请修改后换一个记录编号')
     if record["duplicate"] and record["parse_status"] != "pending":
         return {"record": record, "duplicate": True, "observations": [],
+                "thoughts": store.thought_for_record(shop_id, record["id"]),
                 "parsed": None, "status": record["parse_status"]}
+    workspace = store.workspace_get(shop_id)
+    profile = workspace or {"profile_id": record.get("profile_id", "restaurant")}
+    if profile.get("profile_id", "restaurant") != "restaurant":
+        return _profile_pending(store, record, profile)
     if record["duplicate"]:
         # pending 只说明原话写下来了，账目还没投影完。续跑前先认领，
         # 否则同一请求号的两个写者会各投影一套账目 —— 采购金额直接翻倍。
@@ -194,26 +291,55 @@ def observe(store, shop_id, text, *, _record=None, **fields):
     # 重试必须读取已保存的正文，不采纳同一消息 ID 后续传来的不同正文。
     text = record["raw_text"]
     base = dt.date.fromisoformat(record.get("parse_base_date") or record["received_at"][:10])
-    work = text.strip()
-    found = find_observations(work, base.isoformat())
-    parsed = parser.parse(work, base, extra_mask=found)
+    native = extract_native(text, base.isoformat(), observation_finder=find_observations)
+    parsed, found = _parse_native(text, base, native)
+    parsed["raw"] = text
+    parsed["thoughts"] = native["thoughts"]
+    parsed["leftovers"] = native["leftovers"] + parsed.get("leftovers", [])
+    if native["thoughts"] and not (parsed["entries"] or parsed["sales"]):
+        parsed["intent"] = "record"
     rows = [{k: v for k, v in row.items() if k not in ("start", "end")} for row in found]
     rows = dedup_keys(normalize(store, shop_id, [{**r, "record_id": record["id"]} for r in rows]))
-    has_data = bool(rows or parsed["entries"] or parsed["sales"])
+    has_data = bool(rows or parsed["entries"] or parsed["sales"] or native["thoughts"])
     status = ("partial" if parsed.get("leftovers") else "parsed") if has_data else (
-        "parsed" if parsed["intent"] == "query" else "unparsed")
+        "parsed" if parsed["intent"] == "query" and not native["leftovers"] else "unparsed")
     with store.transaction():
         # pending 重试只替换非金额投影，不动已确认账目的投影。
         for old in store.observation_list(shop_id, "0000", "9999"):
             if old["record_id"] == record["id"] and old["dedup_key"].startswith("record:"):
                 store.observation_delete_origin(shop_id, old["dedup_key"])
         ids = store.observation_add(shop_id, rows)
+        # 直接 observe 后再 ingest 的 pending 来源可能已有随想；不得重复创建。
+        thoughts = store.thought_for_record(shop_id, record["id"])
+        if native["thoughts"] and not thoughts:
+            # 旧直接 ingest/observe 调用可省略 ensure_shop；随想的工作空间
+            # 外键在本投影事务内补齐，与旧餐饮默认兼容，失败时也一起回滚。
+            if not workspace:
+                store.ensure_shop(shop_id, profile_id=record.get("profile_id", "restaurant"))
+            store.thought_add(shop_id, record["id"], native["thoughts"])
+            thoughts = store.thought_for_record(shop_id, record["id"])
         # 金额尚待调用方投影，不提前宣布整条完成。
         if not parsed["entries"] and not parsed["sales"]:
             store.record_set_status(record["id"], status, PARSER_VERSION)
     return {"record": {**record, "parse_status": status, "parser_version": PARSER_VERSION},
             "duplicate": False, "observations": rows, "observation_ids": ids,
-            "parsed": parsed, "status": status}
+            "thoughts": thoughts, "thought_ids": [row["id"] for row in thoughts],
+            "warnings": native["warnings"], "parsed": parsed, "status": status}
+
+
+def _profile_pending(store, record, workspace):
+    pending = {"intent": "unknown", "routing_status": "needs_confirmation",
+               "profile_id": workspace["profile_id"]}
+    if not (record["duplicate"] and record["parse_status"] == "needs_confirmation"):
+        with store.transaction():
+            store.record_set_routing(record["id"], **pending)
+            store.record_set_status(record["id"], "needs_confirmation", PARSER_VERSION)
+    return {"record": {**record, "parse_status": "needs_confirmation", **pending},
+            "duplicate": bool(record["duplicate"]), "observations": [],
+            "observation_ids": [], "thoughts": [], "thought_ids": [],
+            "parsed": {"intent": "needs_confirmation", "entries": [], "sales": [],
+                       "thoughts": [], "leftovers": [record["raw_text"]]},
+            "entry_ids": [], "sale_ids": [], "status": "needs_confirmation"}
 
 
 def ingest(store, shop_id, text, **fields):
@@ -223,25 +349,6 @@ def ingest(store, shop_id, text, **fields):
     返回待确认，不能因为句子里出现数字就误写成餐饮账目。
     """
     record = _save_record(store, shop_id, text, **fields)
-    workspace = store.workspace_get(shop_id)
-    if workspace and workspace.get("profile_id", "restaurant") != "restaurant":
-        if record["duplicate"] and record["parse_status"] == "needs_confirmation":
-            return {"record": record, "duplicate": True, "observations": [],
-                    "observation_ids": [], "parsed": None,
-                    "entry_ids": [], "sale_ids": [], "status": record["parse_status"]}
-        pending = {"intent": "unknown", "routing_status": "needs_confirmation",
-                   "profile_id": workspace["profile_id"]}
-        # A retry of a record left pending by a crash completes this small
-        # routing transaction instead of caching a permanently pending result.
-        with store.transaction():
-            store.record_set_routing(record["id"], **pending)
-            store.record_set_status(record["id"], "needs_confirmation", PARSER_VERSION)
-        return {"record": {**record, "parse_status": "needs_confirmation", **pending},
-                "duplicate": bool(record["duplicate"]), "observations": [],
-                "observation_ids": [],
-                "parsed": {"intent": "needs_confirmation", "entries": [], "sales": [],
-                           "leftovers": [record["raw_text"]]},
-                "entry_ids": [], "sale_ids": [], "status": "needs_confirmation"}
     try:
         with store.transaction():
             result = observe(store, shop_id, text, _record=record)

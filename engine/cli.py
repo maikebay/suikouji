@@ -41,20 +41,16 @@ from .report import (
 )
 from .store import SqliteStore, default_db_path, sha256_file
 
-UNPARSED_HINT = """\
-没能从这句话里认出金额和类型，所以**没有入账**（宁可漏记，不可错记）。
+UNPARSED_HINT = (
+    "原话已保留，暂未识别出可单独记录的账目或随想，涉及的金额未入账。\n"
+    "未识别的内容可交给已连接的外部助手整理；请先核对已有记录，不要重发整段原话。"
+)
 
-请你把这句话抽成 JSON，再录一次：
 
-```
-suikouji add-json '[{{"date":"{date}","type":"purchase","category":"食材成本",
-  "amount":680,"item":"牛肉","qty":50,"unit":"斤"}}]'
-```
-
-- `type` 只能是 `revenue`（营业额）/ `purchase`（进货）/ `expense`（支出）
-- `date` 用 `YYYY-MM-DD`，没说日期就用今天 {date}
-- 数量 `qty` + `unit` 只对进货有意义，能填就填，成本核算要用
-"""
+def _thought_receipt(thoughts: list) -> str:
+    dates = sorted({row["date"] for row in thoughts if row.get("date")})
+    label = (dates[0] if len(dates) == 1 else f"{dates[0]}至{dates[-1]}") if dates else ""
+    return f"已保存 {len(thoughts)} 条随想" + (f"（记录日：{label}）" if label else "") + "。"
 
 
 def _out(args, text: str, payload=None) -> None:
@@ -84,16 +80,37 @@ def _period_range(period: str) -> tuple:
 def cmd_record(args) -> int:
     store = SqliteStore(args.db)
     store.ensure_shop(args.shop)
-    receipt = ingest(store, args.shop, args.text, dedup_ref=args.dedup_ref)
-    if receipt["duplicate"]:
-        _out(args, "这条消息已记录，没有重复入库。", receipt)
+    try:
+        receipt = ingest(store, args.shop, args.text, dedup_ref=args.dedup_ref)
+    except ValueError:
+        _out(args, "日期或金额等内容未通过校验，账目和随想均未写入，请先核对。",
+             {"status": "rejected", "thoughts": [], "duplicate": False})
+        return 3
+    thoughts = receipt.get("thoughts") or []
+    status = receipt.get("status")
+    if status == "needs_confirmation":
+        _out(args, "原话已保存。当前账本的行业尚不支持自动记录账目和随想，需要先确认适用的记录方式。", receipt)
+        return 3
+    if status == "rejected":
+        _out(args, "原话已保存，但日期或金额等内容未通过校验，账目和随想均未写入，请先核对。", receipt)
+        return 3
+    if status in {"pending", "parsing"}:
+        _out(args, "暂时没拿到结果，请使用同一条消息继续核对，不要另发一条重复记录。", receipt)
+        return 3
+    if receipt.get("duplicate"):
+        lines = ["这条消息已记录，没有重复入库。"]
+        if thoughts:
+            lines.append(_thought_receipt(thoughts))
+        if status == "partial":
+            lines.append("仍有部分内容待核对，未处理部分涉及的金额未入账；请先核对已有记录，不要重发整段原话。")
+        _out(args, "\n".join(lines), receipt)
         return 0
-    result = receipt["parsed"]
-    entries = [{**e, "shop_id": args.shop} for e in result["entries"]]
-    sales = result["sales"]
-    observations = receipt["observations"]
+    result = receipt.get("parsed") or {}
+    entries = [{**e, "shop_id": args.shop} for e in result.get("entries", [])]
+    sales = result.get("sales", [])
+    observations = receipt.get("observations") or []
 
-    if entries or sales or observations:
+    if entries or sales or observations or thoughts:
         lines = []
         ids = []
         if entries:
@@ -104,7 +121,7 @@ def cmd_record(args) -> int:
             for e in entries:
                 qty = f" {fmt_qty(e['qty'])}{e['unit'] or ''}" if e.get("qty") else ""
                 lines.append(f"| {e['date']} | {TYPE_LABEL.get(e['type'], e['type'])} | "
-                             f"{e['category']} | {e['item']}{qty} | {fmt_money(e['amount'])} |")
+                             f"{e['category']} | {e.get('item') or '—'}{qty} | {e['amount']:,.2f} |")
 
         if sales:
             rows = sales
@@ -113,9 +130,9 @@ def cmd_record(args) -> int:
             lines += ["已记销量：", "", "| 日期 | 商品 | 数量 | 金额 |",
                       "| --- | --- | --- | --- |"]
             for s in rows:
+                amount = f"{s['amount']:,.2f}" if s.get("amount") is not None else "—"
                 lines.append(f"| {s['date']} | {s['product_name']} | "
-                             f"{fmt_qty(s['qty'])}{s.get('unit') or ''} | "
-                             f"{fmt_money(s['amount']) if s['amount'] else '—'} |")
+                             f"{fmt_qty(s['qty'])}{s.get('unit') or ''} | {amount} |")
 
         if observations:
             lines += ["", "已记录经营信息：", "", "| 日期 | 类型 | 主体 | 指标 | 取值 |",
@@ -125,22 +142,29 @@ def cmd_record(args) -> int:
                          if obs.get("value_num") is not None else obs["value_text"])
                 lines.append(f"| {obs['occurred_at']} | {obs['kind']} | {obs.get('subject') or '—'} | "
                              f"{obs['measure']} | {value} |")
+        if thoughts:
+            if lines:
+                lines.append("")
+            lines.append(_thought_receipt(thoughts))
         if result.get("leftovers"):
             lines.append("")
-            lines.append(f"没看懂的片段：{'、'.join(result['leftovers'])}")
+            lines.append("以下片段尚待核对，涉及的金额未入账：" + "；".join(f"“{text}”" for text in result["leftovers"]) + "。")
+            lines.append("未识别的内容可交给已连接的外部助手整理；请先核对已有记录，不要重发整段原话。")
+        elif status == "partial":
+            lines.append("还有部分内容待核对，未处理部分涉及的金额未入账。")
         if entries and result.get("confidence", 1) < 0.7:
-            lines.append("")
-            lines.append("⚠️ 这句没有明确说是进货还是支出，我按「其他支出」记了，不对就说一声。")
-        if ids:
-            lines.append("")
-            lines.append("记错了可以说 `撤销 " + ids[0] + "`")
+            lines.append("账目分类有待核对，请先确认已有记录的含义。")
+        if any("归档日" in str(warning) for warning in receipt.get("warnings") or []):
+            lines.append("指定随想归档日需要外部助手整理，相关随想尚未保存。")
+        elif receipt.get("warnings"):
+            lines.append("另有待核对提示，请核对已保存内容。")
         _out(args, "\n".join(lines),
              {"recorded": ids, "entries": entries, "sales": sales,
-              "record_id": receipt["record"]["id"], "status": receipt["status"],
-              "observations": observations, "leftovers": result.get("leftovers", [])})
+              "record_id": receipt["record"]["id"], "status": receipt["status"], "duplicate": False,
+              "observations": observations, "thoughts": thoughts, "leftovers": result.get("leftovers", [])})
         return 0
 
-    if result["intent"] == "query":
+    if result.get("intent") == "query":
         start, end, label = _period_range(result["period"])
         if result["period"] == "cost":
             start, end = _period_range("month")[:2]
@@ -156,9 +180,14 @@ def cmd_record(args) -> int:
                           "summary": store.summary(args.shop, start, end)})
         return 0
 
-    hint = "原话已保留，等待补充识别。\n\n" + UNPARSED_HINT.format(date=today_iso())
+    hint = UNPARSED_HINT
+    if any("归档日" in str(warning) for warning in receipt.get("warnings") or []):
+        hint += "\n指定随想归档日需要外部助手整理，相关随想尚未保存。"
+    if result.get("leftovers"):
+        hint += "\n尚待核对的片段：" + "；".join(f"“{text}”" for text in result["leftovers"]) + "。"
     _out(args, hint, {"record_id": receipt["record"]["id"], "status": receipt["status"],
-                      "recorded": [], "observations": [], "hint": hint})
+                      "recorded": [], "observations": [], "thoughts": [], "duplicate": False,
+                      "leftovers": result.get("leftovers", []), "hint": hint})
     return 3
 
 

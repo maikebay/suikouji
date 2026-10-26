@@ -13,6 +13,9 @@ info:
     旧版本孤立请求若已有业务结果而无完整响应，返回 409 recovery_needs_review 供人工核对。
     已完成请求仍校验 owner/workspace；后续 profile 变更或修正目标删除不阻止重放。
     JSON 请求体上限 32768 字节；CSV 本身最多 2000000 UTF-8 字节，HTTP 仍受请求体上限约束。
+    0.2.0-staging 使用 schema v6，新增独立生意随想；随想不计入财务汇总、不产生任务或提醒。
+    structured 的四个旧数组仍必填，thoughts 可省略；新结构化解析版本为 agent-structured-2。
+    新回执包含 thoughts，历史完整缓存原样重放，可能没有该字段；客户端须兼容缺省。
 servers:
   - url: http://127.0.0.1:8765
 security:
@@ -45,7 +48,16 @@ paths:
             and its projections. HTTP 200 does not imply a financial write: inspect entries/sales
             and parsed.leftovers. A partial capture may contain successfully booked financial rows.
             Preserve the original text; do not rewrite and resubmit to force parsing.
-        '400': {$ref: '#/components/responses/Error'}
+            Newly executed receipts include thoughts; structured receipts also include
+            normalization.thoughts. Historical cached receipts may omit both and replay unchanged.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptureResponse'}
+        '400':
+          description: invalid_structured for any invalid structured row; no partial write or parser fallback
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '409':
@@ -61,12 +73,55 @@ paths:
         - {$ref: '#/components/parameters/WorkspaceId'}
         - {$ref: '#/components/parameters/CaptureId'}
       responses:
-        '200': {description: Capture detail and projections}
+        '200':
+          description: Original record and same-workspace projections, including complete thoughts and tags
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptureDetail'}
         '404': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/thoughts:
+    get:
+      operationId: listThoughts
+      description: |
+        返回当前工作空间的独立随想，不夹带账目；按 date DESC, created_at DESC, id DESC 排序。
+        start/end 过滤随想记录日（闭区间）。重复 tag 采用 AND，规范化去重，不拆逗号。
+        q 对 title/body 作 Unicode casefold 后的字面子串匹配，不搜索标签、不执行正则或 SQL。
+        before 必须复用服务端返回的不透明游标；绑定 workspace 及规范化后的日期、标签和 q。
+        标签顺序或重复、q 大小写不改变筛选语义；翻页可改变 page_size。
+        非 tag 参数不能重复，未知参数拒绝。显式空 start/end/tag/before 拒绝，空 q 表示不限制。
+        空结果返回 200、items=[]、has_more=false、next_before=null。
+      parameters:
+        - {$ref: '#/components/parameters/WorkspaceId'}
+        - {$ref: '#/components/parameters/ThoughtStart'}
+        - {$ref: '#/components/parameters/ThoughtEnd'}
+        - {$ref: '#/components/parameters/ThoughtTag'}
+        - {$ref: '#/components/parameters/ThoughtQuery'}
+        - {$ref: '#/components/parameters/ThoughtPageSize'}
+        - {$ref: '#/components/parameters/ThoughtBefore'}
+      responses:
+        '200':
+          description: 随想分页结果
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ThoughtPage'}
+        '400':
+          description: 'workspace_required（缺工作空间）、invalid_range（日期或范围）、invalid_tags（标签）、invalid_query（关键词、重复或未知参数）、invalid_page_size（页大小）、invalid_cursor（游标无效或筛选/工作空间不匹配）'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
   /v1/timeline:
     get:
       operationId: listTimeline
+      description: |
+        一条原话一个条目，继续按 capture 事件时间分页；start/end 不是 thought.date 的筛选。
+        types 只可省略或为单值 thought；后者只选含随想的原话，混合条目仍保留账目预览。
+        q 搜索原有原话/投影以及随想标题、正文和标签。随想预览最多3条，正文最多120字符。
+        有原有领域行时保留原财务/观测事件日期算法；纯随想取随想记录日期最大值。
+        正文中的明天、下周等不会把原话事件时间前移。既有 before 游标继续使用。
       parameters:
         - {$ref: '#/components/parameters/WorkspaceId'}
         - {name: q, in: query, schema: {type: string}}
@@ -74,10 +129,20 @@ paths:
         - {$ref: '#/components/parameters/End'}
         - {name: parse_status, in: query, schema: {type: string}}
         - {name: source, in: query, schema: {type: string}}
-        - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100}}
-        - {name: before, in: query, description: 'Cursor occurred_at|created_at|id from the previous page', schema: {type: string}}
+        - {name: types, in: query, description: '仅支持省略或单值 thought；空值、重复、多值及其他类型返回 invalid_types', schema: {type: string, enum: [thought]}}
+        - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 30}}
+        - {name: before, in: query, description: '沿用上一页 next_before 三元组组成的 occurred_at|created_at|id 游标；空值、重复、缺段、多段或日期/时间无效返回 invalid_cursor；不同于随想列表的不透明游标', schema: {type: string}}
       responses:
-        '200': {description: Timeline page}
+        '200':
+          description: 原话时间线分页结果
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TimelinePage'}
+        '400':
+          description: invalid_types, invalid_page_size or invalid_cursor
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         default: {$ref: '#/components/responses/Error'}
   /v1/summary:
     get:
@@ -257,6 +322,41 @@ components:
       name: end
       in: query
       schema: {type: string}
+    ThoughtStart:
+      name: start
+      in: query
+      description: 随想记录日闭区间起点，严格有效公历 YYYY-MM-DD；不得晚于 end
+      schema: {$ref: '#/components/schemas/ThoughtDate'}
+    ThoughtEnd:
+      name: end
+      in: query
+      description: 随想记录日闭区间终点，严格有效公历 YYYY-MM-DD
+      schema: {$ref: '#/components/schemas/ThoughtDate'}
+    ThoughtTag:
+      name: tag
+      in: query
+      style: form
+      explode: true
+      description: '重复参数如 tag=新品&tag=南瓜，AND；先检查最多20项，再按规范化精确值去重；不按逗号拆分'
+      schema:
+        type: array
+        maxItems: 20
+        items: {$ref: '#/components/schemas/ThoughtTagInput'}
+    ThoughtQuery:
+      name: q
+      in: query
+      description: 标题/正文按 Unicode casefold 后字面子串匹配；空串不限制；不裁去关键词空白
+      schema: {type: string, maxLength: 200, default: ''}
+    ThoughtPageSize:
+      name: page_size
+      in: query
+      description: 十进制整数，拒绝小数、布尔值或超范围；翻页可变更
+      schema: {type: integer, minimum: 1, maximum: 100, default: 30}
+    ThoughtBefore:
+      name: before
+      in: query
+      description: 上页 next_before；不透明，绑定工作空间和规范化后的 start/end/tag/q，不绑定 page_size
+      schema: {type: string, minLength: 1, maxLength: 2048}
   schemas:
     ErrorEnvelope:
       type: object
@@ -295,11 +395,17 @@ components:
       additionalProperties: false
       required: [entries, sales, observations, leftovers]
       description: >-
-        Caller Agent separates actual facts from forecasts, opinions and unknowns before
-        calling the tool. Restaurant profile only. At most 50 domain rows across all
-        three row arrays, and at most 50 leftovers. At least one row or leftover is
-        required. Every source_quote and leftover must occur verbatim in original text.
-        Evidence presence is checked; the tool does not prove the Agent's interpretation.
+        Restaurant profile only, including thought-only captures. The four legacy arrays
+        entries/sales/observations/leftovers remain required. Optional thoughts defaults to []
+        only in a validation copy after fingerprinting; explicit null is invalid.
+        At most 50 domain rows across entries/sales/observations/thoughts combined,
+        and at most 50 leftovers. At least one domain row or leftover is required.
+        Entries/sales/observations require actual facts; thoughts preserve ideas and opinions
+        without assertion, financial amount or task fields. Every source_quote and leftover
+        must occur verbatim in original text. Evidence presence does not prove interpretation.
+        Any invalid row rejects the entire request. Raw request differences, including omitted
+        thoughts versus explicit [], conflict under the same request_id; normalization never
+        changes the idempotency fingerprint.
       properties:
         entries:
           type: array
@@ -313,10 +419,166 @@ components:
           type: array
           maxItems: 50
           items: {$ref: '#/components/schemas/AgentObservation'}
+        thoughts:
+          type: array
+          maxItems: 50
+          description: 可省略；仅验证副本补空数组，客户端重试不得补字段或改变首次请求
+          items: {$ref: '#/components/schemas/ThoughtInput'}
         leftovers:
           type: array
           maxItems: 50
           items: {type: string, minLength: 1, maxLength: 2000}
+    ThoughtDate:
+      type: string
+      format: date
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      description: 严格有效公历日期 YYYY-MM-DD；非法日期不替换为今天
+    ThoughtTagInput:
+      type: string
+      description: |
+        Unicode NFC 后去首尾空白，去至多一个开头 # 后再去首尾空白。
+        规范化后1至32个Unicode字符；保留大小写；拒绝内部空白、控制字符和剩余 #。
+        标签数组先检查20项上限，再按规范化精确值去重并保留首次顺序。
+    ThoughtTag:
+      type: string
+      minLength: 1
+      maxLength: 32
+      description: 规范化后的标签，不带 #，大小写不同视为不同值
+    ThoughtInput:
+      type: object
+      additionalProperties: false
+      required: [date, body, source_quote]
+      description: |
+        独立随想校验；不接受 null、id、workspace_id、capture_id、金额、assertion、plan/任务/提醒字段。
+        字符上限按 Unicode 字符数。date 是归档日，默认收到原话在工作空间时区中的日期；
+        正文中的昨天/明天/下周不改归档日，只有明确归档指令经 Agent 整理才采用指定日期。
+        body 可整理但须保留原意和不确定语气；Markdown 只作为内容，不执行HTML、链接或指令。
+        source_quote 必须是原话中精确、连续、非空片段。
+        文本须能以 UTF-8 编码；title/body/source_quote 不接受 U+0000，非法字符返回 invalid_structured，不替换或删去。
+      properties:
+        date: {$ref: '#/components/schemas/ThoughtDate'}
+        title: {type: string, minLength: 1, maxLength: 80, description: 可省略；提供时非空白文本，不生成假标题}
+        body: {type: string, minLength: 1, maxLength: 2000, description: 非空白 Markdown 正文}
+        tags:
+          type: array
+          maxItems: 20
+          description: 可省略，验证后为 []；没标签不追问；显式 null 拒绝
+          items: {$ref: '#/components/schemas/ThoughtTagInput'}
+        source_quote: {type: string, minLength: 1, maxLength: 2000}
+    Thought:
+      type: object
+      required: [id, workspace_id, capture_id, date, body, tags, source_quote, created_at, updated_at]
+      description: 服务端生成身份与归属的公开随想；没有独立创建、编辑或删除接口
+      properties:
+        id: {type: string}
+        workspace_id: {type: string}
+        capture_id: {type: string}
+        date: {$ref: '#/components/schemas/ThoughtDate'}
+        title: {type: string, minLength: 1, maxLength: 80, description: 未提供标题时省略字段，不返回 null；显示摘要不改正文}
+        body: {type: string, minLength: 1, maxLength: 2000}
+        tags:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/ThoughtTag'}
+        source_quote: {type: string, minLength: 1, maxLength: 2000}
+        created_at: {type: string, description: 服务端生成的 ISO 日期时间字符串，沿用现有时间戳格式}
+        updated_at: {type: string, description: 首版创建时与 created_at 相同}
+    ThoughtPage:
+      type: object
+      required: [items, has_more, next_before]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/Thought'}
+        has_more: {type: boolean}
+        next_before: {type: string, nullable: true, description: 有后续页时的不透明游标，末页为 null}
+    CaptureResponse:
+      type: object
+      required: [duplicate, status, capture, parsed, entries, sales, observations, warnings, provenance]
+      description: |
+        新执行回执必有顶层 thoughts；structured 模式必有 normalization.thoughts。
+        为兼容历史完整缓存，schema 不将这两个新增字段设为所有响应必填；历史缓存原样重放。
+        只有随想不等于财务入账；有未解析片段为 partial，无未解析片段且有投影为 parsed。
+        原话、所有投影/标签、请求认领和完整响应同事务提交或回滚。
+      properties:
+        duplicate: {type: boolean}
+        status: {type: string, enum: [parsed, partial, unparsed, rejected, needs_confirmation]}
+        capture: {type: object, description: 完整原话及解析元数据}
+        parsed: {type: object, nullable: true, description: 解析结果；leftovers 为未解析原文片段}
+        entries: {type: array, items: {type: object}}
+        sales: {type: array, items: {type: object}}
+        observations: {type: array, items: {type: object}}
+        thoughts:
+          type: array
+          items: {$ref: '#/components/schemas/Thought'}
+        normalization:
+          allOf:
+            - {$ref: '#/components/schemas/AgentStructuredCapture'}
+          description: 经校验的结构化结果，新执行结果含 thoughts；解析版本 agent-structured-2；历史缓存可能缺省
+        warnings: {type: array, items: {type: string}}
+        provenance: {type: object}
+    CaptureDetail:
+      type: object
+      required: [record, entries, sales, observations, thoughts, warnings]
+      properties:
+        record: {type: object, description: 完整原话及解析元数据}
+        entries: {type: array, items: {type: object}}
+        sales: {type: array, items: {type: object}}
+        observations: {type: array, items: {type: object}}
+        thoughts:
+          type: array
+          items: {$ref: '#/components/schemas/Thought'}
+        warnings: {type: array, items: {type: string}}
+    ThoughtPreview:
+      type: object
+      required: [id, date, body, tags]
+      properties:
+        id: {type: string}
+        date: {$ref: '#/components/schemas/ThoughtDate'}
+        title: {type: string, minLength: 1, maxLength: 80, description: 未提供标题时省略字段}
+        body: {type: string, maxLength: 120, description: 正文摘要；完整正文通过原话详情或随想列表获取}
+        tags:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/ThoughtTag'}
+    TimelineItem:
+      type: object
+      required: [record, event_time, projection_counts, ledger_preview, thought_preview, warnings]
+      properties:
+        record: {type: object}
+        event_time: {type: string}
+        projection_counts:
+          type: object
+          required: [entries, sales, observations, thoughts]
+          properties:
+            entries: {type: integer, minimum: 0}
+            sales: {type: integer, minimum: 0}
+            observations: {type: integer, minimum: 0}
+            thoughts: {type: integer, minimum: 0, description: 随想总条数，不能以预览条数代替}
+        correction_count: {type: integer, minimum: 0}
+        ledger_preview: {type: array, items: {type: object}, description: 混合原话继续保留既有账目预览}
+        thought_preview:
+          type: array
+          maxItems: 3
+          items: {$ref: '#/components/schemas/ThoughtPreview'}
+        warnings: {type: array, items: {type: string}}
+    TimelinePage:
+      type: object
+      required: [items, has_more, next_before]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/TimelineItem'}
+        has_more: {type: boolean}
+        next_before:
+          type: array
+          nullable: true
+          minItems: 3
+          maxItems: 3
+          items: {type: string}
+          description: 沿用事件时间、创建时间、原话ID三元组；下一请求用 | 连接，末页为 null
     AgentEntry:
       type: object
       additionalProperties: false

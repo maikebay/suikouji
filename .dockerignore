@@ -23,6 +23,7 @@ engine/**
 !engine/runtime.py
 !engine/sheet.py
 !engine/store.py
+!engine/thoughts.py
 !engine/web.py
 !channel/
 channel/**

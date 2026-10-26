@@ -6,8 +6,11 @@ Agent 先整理口语记录，门面校验结构化事实、工作空间授权�
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
+import re
 import tempfile
 import uuid
 import datetime as dt
@@ -65,6 +68,7 @@ class AgentService:
             "list_entries": {"method": "GET", "path": "/v1/entries"},
             "list_sales": {"method": "GET", "path": "/v1/sales"},
             "list_observations": {"method": "GET", "path": "/v1/observations"},
+            "list_thoughts": {"method": "GET", "path": "/v1/thoughts"},
             "list_reviews": {"method": "GET", "path": "/v1/reviews"},
             "apply_review": {"method": "POST", "path": "/v1/reviews", "confirmation": "required"},
             "preview_import": {"method": "POST", "path": "/v1/imports/preview", "confirmation": "required"},
@@ -83,6 +87,41 @@ class AgentService:
         if not isinstance(value, str) or not value.strip() or len(value) > MAX_TEXT:
             raise AgentError("invalid_text", f"原话必须是 1 到 {MAX_TEXT} 个字符")
         return value
+
+    @staticmethod
+    def _check_unicode(value, code):
+        # JSON escapes can represent unpaired surrogates; neither UTF-8 nor
+        # SQLite can store them. Inspect only, preserving original hash bytes.
+        pending = [value]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, str):
+                try:
+                    item.encode("utf-8")
+                except UnicodeEncodeError as exc:
+                    raise AgentError(code, "文本含有无效的 Unicode 字符") from exc
+            elif isinstance(item, dict):
+                pending.extend(item.keys())
+                pending.extend(item.values())
+            elif isinstance(item, (list, tuple)):
+                pending.extend(item)
+
+    @staticmethod
+    def _cursor_key(value, *, date_only=False):
+        if (not isinstance(value, (list, tuple)) or len(value) != 3
+                or any(not isinstance(part, str) or not part or "|" in part for part in value)):
+            raise ValueError("invalid cursor tuple")
+        for part in value:
+            part.encode("utf-8")
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value[0][:10]):
+            raise ValueError("invalid cursor date")
+        dt.date.fromisoformat(value[0][:10])
+        if date_only and len(value[0]) != 10:
+            raise ValueError("invalid cursor date")
+        if len(value[0]) != 10:
+            dt.datetime.fromisoformat(value[0].replace("Z", "+00:00"))
+        dt.datetime.fromisoformat(value[1].replace("Z", "+00:00"))
+        return tuple(value)
 
     @staticmethod
     def _fingerprint(payload):
@@ -148,6 +187,11 @@ class AgentService:
         workspace = self.workspace(principal, workspace_id)
         request_id = self._request_id(request_id)
         text = self._text(text)
+        self._check_unicode(request_id, "invalid_request_id")
+        self._check_unicode(text, "invalid_text")
+        if structured is not None:
+            self._check_unicode(structured, "invalid_structured")
+        self._check_unicode([context, intent, profile_id, dedup_ref, peer], "invalid_text")
         if source not in ("agent", "chat", "ilink", "web", "cli"):
             raise AgentError("invalid_source", "来源不在允许范围内")
         if received_at is not None:
@@ -249,6 +293,7 @@ class AgentService:
                 "entries": detail["entries"] if detail else [],
                 "sales": detail["sales"] if detail else [],
                 "observations": detail["observations"] if detail else [],
+                "thoughts": detail["thoughts"] if detail else [],
                 "warnings": receipt.get("warnings", detail["warnings"] if detail else []),
                 "provenance": {
                     "source": source,
@@ -280,6 +325,8 @@ class AgentService:
 
     def timeline(self, principal: Principal, workspace_id: str, **filters) -> dict:
         self.workspace(principal, workspace_id)
+        if "types" in filters and filters["types"] != "thought":
+            raise AgentError("invalid_types", "types 只支持 thought")
         page_size = filters.pop("page_size", 30)
         try:
             page_size = int(page_size)
@@ -288,7 +335,68 @@ class AgentService:
         if not 1 <= page_size <= MAX_PAGE_SIZE:
             raise AgentError("invalid_page_size", "page_size 必须在 1 到 100 之间")
         filters["page_size"] = page_size
+        if filters.get("before") is not None:
+            try:
+                filters["before"] = self._cursor_key(filters["before"])
+            except (ValueError, TypeError, UnicodeError) as exc:
+                raise AgentError("invalid_cursor", "before 游标格式不正确") from exc
         return self.store.record_timeline(workspace_id, **filters)
+
+    def thoughts(self, principal: Principal, workspace_id: str, *, start=None, end=None,
+                 tags=None, q="", page_size=30, before=None) -> dict:
+        self.workspace(principal, workspace_id)
+        from .thoughts import normalize_tags
+        for value in (start, end):
+            if value is not None:
+                try:
+                    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+                        raise ValueError()
+                    dt.date.fromisoformat(value)
+                except ValueError as exc:
+                    raise AgentError("invalid_range", "日期必须是有效的 YYYY-MM-DD") from exc
+        if start is not None and end is not None and start > end:
+            raise AgentError("invalid_range", "开始日期不能晚于结束日期")
+        if not isinstance(q, str) or len(q) > 200:
+            raise AgentError("invalid_query", "关键词最多 200 个字符")
+        self._check_unicode(q, "invalid_query")
+        if type(page_size) is not int and not (isinstance(page_size, str) and re.fullmatch(r"[0-9]+", page_size)):
+            raise AgentError("invalid_page_size", "page_size 必须是 1 到 100 的整数")
+        if len(str(page_size)) > 3 or not 1 <= int(page_size) <= MAX_PAGE_SIZE:
+            raise AgentError("invalid_page_size", "page_size 必须是 1 到 100 的整数")
+        try:
+            tags = normalize_tags([] if tags is None else tags)
+        except ValueError as exc:
+            raise AgentError("invalid_tags", str(exc)) from exc
+        # Bind opaque continuation tokens to the authorized workspace and semantic
+        # filters. Pagination size may change without changing the result set.
+        binding = self._fingerprint({"workspace": workspace_id, "start": start, "end": end,
+                                     "tags": sorted(tags), "q": q.casefold()})
+        key = None
+        if before is not None:
+            try:
+                if (not isinstance(before, str) or not 1 <= len(before) <= 2048
+                        or not re.fullmatch(r"[A-Za-z0-9_-]+", before)):
+                    raise ValueError()
+                cursor = json.loads(base64.b64decode(before + "=" * (-len(before) % 4),
+                                                    altchars=b"-_", validate=True))
+                if (not isinstance(cursor, dict) or set(cursor) != {"v", "filter", "key"}
+                        or type(cursor["v"]) is not int or cursor["v"] != 1
+                        or cursor["filter"] != binding or not isinstance(cursor["key"], list)
+                        or len(cursor["key"]) != 3
+                        or any(not isinstance(part, str) or not part for part in cursor["key"])):
+                    raise ValueError()
+                key = self._cursor_key(cursor["key"], date_only=True)
+            except (ValueError, TypeError, UnicodeError, binascii.Error, RecursionError) as exc:
+                raise AgentError("invalid_cursor", "随想游标无效或与工作空间、筛选条件不匹配") from exc
+        result = self.store.thought_list(workspace_id, start=start, end=end, tags=tags,
+                                         q=q, page_size=int(page_size), before=key)
+        next_key = result["next_before"]
+        token = None
+        if next_key is not None:
+            encoded = json.dumps({"v": 1, "filter": binding, "key": list(next_key)},
+                                 ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            token = base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+        return {**result, "next_before": token}
 
     def summary(self, principal: Principal, workspace_id: str, month=None) -> dict:
         self.workspace(principal, workspace_id)

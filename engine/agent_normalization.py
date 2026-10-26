@@ -11,9 +11,10 @@ import math
 import re
 
 from .observe import RECORD_TYPES, dedup_keys, normalize
+from .thoughts import validate_thought
 
 
-PARSER_VERSION = "agent-structured-1"
+PARSER_VERSION = "agent-structured-2"
 MAX_ROWS = 50
 MAX_NUMBER = 1_000_000_000_000
 MAX_LABEL = 100
@@ -168,12 +169,12 @@ def _observation(row, raw_text, label):
 
 
 def validate_structured(raw_text, structured):
-    """Return a detached, validated payload; no defaults, truncation, or rounding."""
-    _fields(structured, SECTIONS, set(), "structured")
-    for key in SECTIONS:
-        if not isinstance(structured[key], list):
+    """Validate a copy after fingerprinting; optional thoughts default only here."""
+    _fields(structured, SECTIONS, {"thoughts"}, "structured")
+    for key in SECTIONS | {"thoughts"}:
+        if not isinstance(structured.get(key, []), list):
             raise ValueError(f"structured.{key} 必须是数组")
-    row_count = sum(len(structured[key]) for key in ("entries", "sales", "observations"))
+    row_count = sum(len(structured.get(key, [])) for key in ("entries", "sales", "observations", "thoughts"))
     if row_count > MAX_ROWS or len(structured["leftovers"]) > MAX_ROWS:
         raise ValueError(f"结构化记录合计不能超过 {MAX_ROWS} 条，leftovers 也不能超过 {MAX_ROWS} 条")
     if not row_count and not structured["leftovers"]:
@@ -185,6 +186,7 @@ def validate_structured(raw_text, structured):
                          for i, row in enumerate(structured["observations"])],
         "leftovers": [_quote(value, raw_text, f"leftovers[{i}]")
                       for i, value in enumerate(structured["leftovers"])],
+        "thoughts": [validate_thought(row, raw_text) for row in structured.get("thoughts", [])],
     }
 
 
@@ -198,6 +200,8 @@ def persist_structured(store, shop_id, raw_text, normalized, *, source="agent", 
     """
     with store.transaction():
         dates = [row["date"] for key in ("entries", "sales", "observations") for row in normalized[key]]
+        if not dates:
+            dates = [row["date"] for row in normalized["thoughts"]]
         occurred_at = max(dates) if dates else (received_at[:10] if received_at else dt.date.today().isoformat())
         base_date = received_at[:10] if received_at else occurred_at
         record = store.record_add(
@@ -228,10 +232,14 @@ def persist_structured(store, shop_id, raw_text, normalized, *, source="agent", 
             })
         rows = dedup_keys(normalize(store, shop_id, observations))
         observation_ids = store.observation_add(shop_id, rows)
+        thought_ids = store.thought_add(shop_id, record["id"], normalized["thoughts"])
         status = "partial" if normalized["leftovers"] else "parsed"
         store.record_set_status(record["id"], status, PARSER_VERSION)
         parsed = {"intent": "record", "entries": normalized["entries"], "sales": normalized["sales"],
-                  "leftovers": normalized["leftovers"], "mode": "agent_structured", "parser_version": PARSER_VERSION}
+                  "thoughts": normalized["thoughts"], "leftovers": normalized["leftovers"],
+                  "mode": "agent_structured", "parser_version": PARSER_VERSION}
         return {"record": {**record, "parse_status": status}, "duplicate": False, "status": status,
                 "parsed": parsed, "entry_ids": entry_ids, "sale_ids": sale_ids,
-                "observations": rows, "observation_ids": observation_ids, "normalization": normalized}
+                "observations": rows, "observation_ids": observation_ids,
+                "thought_ids": thought_ids, "thoughts": store.thought_for_record(shop_id, record["id"]),
+                "normalization": normalized}

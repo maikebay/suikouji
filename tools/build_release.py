@@ -14,17 +14,18 @@ import tarfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.1.1-staging"
+VERSION = "0.2.0-staging"
 FILES = (
     "Dockerfile", "compose.yaml", ".dockerignore", ".gitignore", "README.md", "CONTEXT.md",
     "engine/__init__.py", "engine/accounting.py", "engine/agent_service.py", "engine/agent_normalization.py", "engine/backup.py",
     "engine/capabilities.py", "engine/cli.py", "engine/cost.py", "engine/deployment.py",
     "engine/importer.py", "engine/model.py", "engine/observe.py", "engine/parser.py",
     "engine/profile.py", "engine/reconcile.py", "engine/report.py", "engine/review.py",
-    "engine/runtime.py", "engine/sheet.py", "engine/store.py", "engine/web.py",
+    "engine/runtime.py", "engine/sheet.py", "engine/store.py", "engine/thoughts.py", "engine/web.py",
     "channel/__init__.py", "channel/aes.py", "channel/bot.py", "channel/ilink.py",
     "web/demo.html", "deploy/README.md", "deploy/.env.example", "deploy/compose.env.example",
     "deploy/BOT_DEPLOY.md", "docs/openapi.yaml", "docs/agent-capabilities.md", "docs/report-output-design.md",
+    "docs/thoughts-release-verification.md",
     "docs/accounting-v1.md", "docs/review-and-correction.md", "docs/parser-boundaries.md",
     "docs/ilink-protocol-notes.md", "docs/adr/0001-legacy-shop-as-workspace.md",
     "docs/engineering/lessons.md", "tools/prepare_deploy.py", "tools/build_release.py",
@@ -36,7 +37,9 @@ FILES = (
     "tests/test_observe.py", "tests/test_parser_boundaries.py", "tests/test_prepare_deploy.py",
     "tests/test_release_package.py", "tests/test_review.py", "tests/test_runtime_backup.py",
     "tests/test_runtime_lifecycle.py", "tests/test_schema_readiness.py", "tests/test_web.py",
-    "tests/fixtures/schema-v1.sql",
+    "tests/test_thoughts_agent.py", "tests/test_thoughts_store.py", "tests/test_thoughts_native.py",
+    "tests/test_thoughts_presentation.py", "tests/test_thoughts_upgrade.py",
+    "tests/fixtures/schema-v1.sql", "tests/fixtures/schema-v5.sql",
 )
 
 
