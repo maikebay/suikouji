@@ -11,6 +11,7 @@ engine/**
 !engine/capabilities.py
 !engine/cli.py
 !engine/cost.py
+!engine/custom_fields.py
 !engine/deployment.py
 !engine/importer.py
 !engine/model.py
