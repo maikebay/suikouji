@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import runtime
 from .backup import backup_database, inspect_database
 from .profile import get_profile
-from .store import SCHEMA_VERSION, SqliteStore, database_schema_ready, migrate_v5_to_v6
+from .store import SCHEMA_VERSION, SqliteStore, database_schema_ready, migrate_to_current
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -97,7 +97,7 @@ def initialize_database(env, *, allow_existing=False):
 
 
 def migrate_database(source: str, destination: str) -> dict:
-    """将完整 v5 库备份到新路径后迁移副本；永不修改或覆盖源库。"""
+    """将完整 v5 或 v6 库备份到新路径后迁移副本；永不修改或覆盖源库。"""
     source_path, destination_path = Path(source).absolute(), Path(destination).absolute()
     if source == ":memory:" or not source_path.is_file() or source_path.is_symlink():
         raise ValueError("迁移源必须是现有数据库文件")
@@ -113,11 +113,16 @@ def migrate_database(source: str, destination: str) -> dict:
         # is opened read-only and never passed through a migrating constructor.
         with closing(sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True)) as source_conn, \
                 closing(sqlite3.connect(temporary)) as target_conn:
-            if not database_schema_ready(source_conn, expected_version=5):
-                raise ValueError("迁移源必须是完整的 v5 数据库")
+            source_version = None
+            for version in (5, 6):
+                if database_schema_ready(source_conn, expected_version=version):
+                    source_version = version
+                    break
+            if source_version is None:
+                raise ValueError("迁移源必须是完整的 v5 或 v6 数据库")
             source_conn.backup(target_conn)
             target_conn.execute("PRAGMA foreign_keys=ON")
-            migrate_v5_to_v6(target_conn)
+            migrate_to_current(target_conn)
             # Publish a self-contained main file, including when source uses WAL.
             target_conn.execute("PRAGMA journal_mode=DELETE")
         check = inspect_database(str(temporary))
@@ -132,7 +137,7 @@ def migrate_database(source: str, destination: str) -> dict:
         finally:
             os.close(directory_fd)
         return {**check, "path": str(destination_path), "status": "migrated",
-                "source_schema_version": 5, "schema_version": SCHEMA_VERSION}
+                "source_schema_version": source_version, "schema_version": SCHEMA_VERSION}
     finally:
         temporary.unlink(missing_ok=True)
         for suffix in ("-journal", "-wal", "-shm"):

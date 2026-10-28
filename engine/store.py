@@ -29,7 +29,8 @@ from .model import (
     round2,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+HISTORICAL_SCHEMA_VERSIONS = (5, 6)
 
 # Execute these statements inside the caller's transaction: executescript would
 # commit it before applying DDL, breaking copy migration and rollback guarantees.
@@ -69,6 +70,229 @@ _THOUGHT_SCHEMA = (
 
 def _create_thought_schema(conn):
     for statement in _THOUGHT_SCHEMA:
+        conn.execute(statement)
+
+
+# Custom attributes live beside ledger rows. Never add one ALTER per user field.
+_CUSTOM_FIELD_SCHEMA = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_workspace_id ON entry(shop_id, id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_workspace_id ON sale(shop_id, id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_observation_workspace_id ON observation(shop_id, id)",
+    """CREATE TABLE IF NOT EXISTS custom_field_config (
+        shop_id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL CHECK(version >= 0),
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS custom_field (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        name_identity TEXT NOT NULL,
+        value_type TEXT NOT NULL CHECK(value_type IN ('text', 'number', 'enum', 'date')),
+        scopes TEXT NOT NULL,
+        required INTEGER NOT NULL CHECK(required IN (0, 1)) DEFAULT 0,
+        unit TEXT,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(shop_id, id),
+        UNIQUE(shop_id, key),
+        UNIQUE(shop_id, name_identity),
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_custom_field_enabled
+       ON custom_field(shop_id, enabled, created_at, id)""",
+    """CREATE TABLE IF NOT EXISTS custom_field_option (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        field_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        name_identity TEXT NOT NULL,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+        position INTEGER NOT NULL CHECK(position >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(shop_id, id),
+        UNIQUE(shop_id, field_id, name_identity),
+        UNIQUE(shop_id, field_id, position),
+        FOREIGN KEY(shop_id, field_id) REFERENCES custom_field(shop_id, id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_custom_option_field
+       ON custom_field_option(shop_id, field_id, enabled, position)""",
+    """CREATE TABLE IF NOT EXISTS custom_field_audit (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        field_id TEXT,
+        before_json TEXT,
+        after_json TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        confirmation_json TEXT NOT NULL,
+        config_version INTEGER NOT NULL CHECK(config_version >= 1),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_custom_field_audit
+       ON custom_field_audit(shop_id, field_id, created_at, id)""",
+    """CREATE TABLE IF NOT EXISTS custom_entry_value (
+        shop_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        field_id TEXT NOT NULL,
+        value_type TEXT NOT NULL,
+        text_value TEXT,
+        number_value TEXT,
+        option_id TEXT,
+        date_value TEXT,
+        source_quote TEXT,
+        source_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(shop_id, target_id, field_id),
+        FOREIGN KEY(shop_id, target_id) REFERENCES entry(shop_id, id),
+        FOREIGN KEY(shop_id, field_id) REFERENCES custom_field(shop_id, id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS custom_sale_value (
+        shop_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        field_id TEXT NOT NULL,
+        value_type TEXT NOT NULL,
+        text_value TEXT,
+        number_value TEXT,
+        option_id TEXT,
+        date_value TEXT,
+        source_quote TEXT,
+        source_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(shop_id, target_id, field_id),
+        FOREIGN KEY(shop_id, target_id) REFERENCES sale(shop_id, id),
+        FOREIGN KEY(shop_id, field_id) REFERENCES custom_field(shop_id, id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS custom_observation_value (
+        shop_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        field_id TEXT NOT NULL,
+        value_type TEXT NOT NULL,
+        text_value TEXT,
+        number_value TEXT,
+        option_id TEXT,
+        date_value TEXT,
+        source_quote TEXT,
+        source_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(shop_id, target_id, field_id),
+        FOREIGN KEY(shop_id, target_id) REFERENCES observation(shop_id, id),
+        FOREIGN KEY(shop_id, field_id) REFERENCES custom_field(shop_id, id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS custom_thought_value (
+        shop_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        field_id TEXT NOT NULL,
+        value_type TEXT NOT NULL,
+        text_value TEXT,
+        number_value TEXT,
+        option_id TEXT,
+        date_value TEXT,
+        source_quote TEXT,
+        source_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(shop_id, target_id, field_id),
+        FOREIGN KEY(shop_id, target_id) REFERENCES thoughts(shop_id, id),
+        FOREIGN KEY(shop_id, field_id) REFERENCES custom_field(shop_id, id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS custom_field_gap (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        field_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('missing', 'retired', 'filled')),
+        config_version INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(shop_id, record_type, target_id, field_id),
+        FOREIGN KEY(shop_id, field_id) REFERENCES custom_field(shop_id, id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_custom_gap_status
+       ON custom_field_gap(shop_id, status, record_type, target_id)""",
+    """CREATE TABLE IF NOT EXISTS custom_field_suggestion (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        suggestion_type TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        state TEXT NOT NULL CHECK(state IN ('pending', 'accepted', 'rejected', 'stale')),
+        payload_json TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        config_version INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(shop_id, fingerprint),
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_custom_suggestion_state
+       ON custom_field_suggestion(shop_id, state, created_at, id)""",
+    """CREATE TABLE IF NOT EXISTS custom_field_preview (
+        token TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        principal_id TEXT NOT NULL,
+        preview_type TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        config_version INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_request_id TEXT,
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS custom_field_alias (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        field_id TEXT NOT NULL,
+        source_text TEXT NOT NULL,
+        source_identity TEXT NOT NULL,
+        target_text TEXT,
+        option_id TEXT,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(shop_id, field_id, source_identity),
+        FOREIGN KEY(shop_id, field_id) REFERENCES custom_field(shop_id, id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_custom_alias_field
+       ON custom_field_alias(shop_id, field_id, enabled, source_identity)""",
+    """CREATE TABLE IF NOT EXISTS custom_import_mapping (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        source_header TEXT NOT NULL,
+        header_identity TEXT NOT NULL,
+        target_kind TEXT NOT NULL CHECK(target_kind IN ('generic', 'custom', 'raw')),
+        generic_field TEXT,
+        field_id TEXT,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(shop_id, header_identity),
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_custom_import_mapping
+       ON custom_import_mapping(shop_id, enabled, header_identity)""",
+)
+
+
+_CUSTOM_VALUE_COLUMNS = (
+    "shop_id, target_id, field_id, value_type, text_value, number_value, "
+    "option_id, date_value, source_quote, source_json, created_at, updated_at"
+)
+
+
+def _create_custom_field_schema(conn):
+    for statement in _CUSTOM_FIELD_SCHEMA:
         conn.execute(statement)
 
 _SCHEMA = """
@@ -277,7 +501,7 @@ CREATE TABLE IF NOT EXISTS dimension (
 
 
 def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
-    """只读校验运行字段和随想约束；v5 校验仅供显式副本迁移使用。"""
+    """只读校验当前结构；v5/v6 校验仅供显式副本迁移使用。"""
     required = {
         "meta": "key, value",
         "shop": "id, name, created_at",
@@ -308,12 +532,37 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                        "value_text, unit, confidence, source_span, dedup_key, created_at",
         "dimension": "id, shop_id, kind, canonical, aliases, created_at",
     }
-    if expected_version not in (5, SCHEMA_VERSION):
+    if expected_version not in (*HISTORICAL_SCHEMA_VERSIONS, SCHEMA_VERSION):
         return False
-    if expected_version == SCHEMA_VERSION:
+    if expected_version >= 6:
         required.update({
             "thoughts": "id, shop_id, capture_id, date, title, body, source_quote, created_at, updated_at",
             "thought_tags": "shop_id, thought_id, tag, position",
+        })
+    if expected_version == SCHEMA_VERSION:
+        required.update({
+            "custom_field_config": "shop_id, version, updated_at",
+            "custom_field": "id, shop_id, key, display_name, name_identity, value_type, "
+                            "scopes, required, unit, enabled, revision, created_at, updated_at",
+            "custom_field_option": "id, shop_id, field_id, display_name, name_identity, "
+                                   "enabled, position, created_at, updated_at",
+            "custom_field_audit": "id, shop_id, action, field_id, before_json, after_json, "
+                                  "actor, confirmation_json, config_version, created_at",
+            "custom_entry_value": _CUSTOM_VALUE_COLUMNS,
+            "custom_sale_value": _CUSTOM_VALUE_COLUMNS,
+            "custom_observation_value": _CUSTOM_VALUE_COLUMNS,
+            "custom_thought_value": _CUSTOM_VALUE_COLUMNS,
+            "custom_field_gap": "id, shop_id, record_type, target_id, field_id, status, "
+                                "config_version, created_at, updated_at",
+            "custom_field_suggestion": "id, shop_id, suggestion_type, revision, state, "
+                                       "payload_json, evidence_json, fingerprint, config_version, "
+                                       "created_at, updated_at",
+            "custom_field_preview": "token, shop_id, principal_id, preview_type, fingerprint, "
+                                    "payload_json, config_version, created_at, expires_at, consumed_request_id",
+            "custom_field_alias": "id, shop_id, field_id, source_text, source_identity, "
+                                  "target_text, option_id, enabled, created_at, updated_at",
+            "custom_import_mapping": "id, shop_id, source_header, header_identity, target_kind, "
+                                     "generic_field, field_id, enabled, created_at, updated_at",
         })
     try:
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -321,13 +570,26 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
             return False
         for table, columns in required.items():
             conn.execute(f"SELECT {columns} FROM {table} LIMIT 0")
-        if expected_version == SCHEMA_VERSION:
+        if expected_version >= 6:
             indexes = {
                 "idx_record_workspace_id": ("shop_id", "id"),
                 "idx_thoughts_page": ("shop_id", "date", "created_at", "id"),
                 "idx_thoughts_capture": ("shop_id", "capture_id", "created_at", "id"),
                 "idx_thought_tags_lookup": ("shop_id", "tag", "thought_id"),
             }
+            if expected_version == SCHEMA_VERSION:
+                indexes.update({
+                    "idx_entry_workspace_id": ("shop_id", "id"),
+                    "idx_sale_workspace_id": ("shop_id", "id"),
+                    "idx_observation_workspace_id": ("shop_id", "id"),
+                    "idx_custom_field_enabled": ("shop_id", "enabled", "created_at", "id"),
+                    "idx_custom_option_field": ("shop_id", "field_id", "enabled", "position"),
+                    "idx_custom_field_audit": ("shop_id", "field_id", "created_at", "id"),
+                    "idx_custom_gap_status": ("shop_id", "status", "record_type", "target_id"),
+                    "idx_custom_suggestion_state": ("shop_id", "state", "created_at", "id"),
+                    "idx_custom_alias_field": ("shop_id", "field_id", "enabled", "source_identity"),
+                    "idx_custom_import_mapping": ("shop_id", "enabled", "header_identity"),
+                })
             for name, columns in indexes.items():
                 if tuple(row[2] for row in conn.execute(f"PRAGMA index_info({name})")) != columns:
                     return False
@@ -337,6 +599,20 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                 "thought_tags": {("shop_id", "thought_id", "tag"),
                                  ("shop_id", "thought_id", "position")},
             }
+            if expected_version == SCHEMA_VERSION:
+                unique_keys.update({
+                    "entry": {("shop_id", "id")},
+                    "sale": {("shop_id", "id")},
+                    "observation": {("shop_id", "id")},
+                    "custom_field": {("id",), ("shop_id", "id"), ("shop_id", "key"),
+                                     ("shop_id", "name_identity")},
+                    "custom_field_option": {("id",), ("shop_id", "id"),
+                                            ("shop_id", "field_id", "name_identity"),
+                                            ("shop_id", "field_id", "position")},
+                    "custom_field_config": {("shop_id",)},
+                    "custom_field_alias": {("id",), ("shop_id", "field_id", "source_identity")},
+                    "custom_import_mapping": {("id",), ("shop_id", "header_identity")},
+                })
             for table, expected in unique_keys.items():
                 actual = set()
                 for index in conn.execute(f"PRAGMA index_list({table})").fetchall():
@@ -353,6 +629,33 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                 "thought_tags": {(("thoughts", "shop_id", "shop_id"),
                                   ("thoughts", "thought_id", "id"))},
             }
+            if expected_version == SCHEMA_VERSION:
+                foreign_keys.update({
+                    "custom_field_config": {(("shop", "shop_id", "id"),)},
+                    "custom_field": {(("shop", "shop_id", "id"),)},
+                    "custom_field_option": {(("custom_field", "shop_id", "shop_id"),
+                                             ("custom_field", "field_id", "id"))},
+                    "custom_field_audit": {(("shop", "shop_id", "id"),)},
+                    "custom_entry_value": {
+                        (("entry", "shop_id", "shop_id"), ("entry", "target_id", "id")),
+                        (("custom_field", "shop_id", "shop_id"), ("custom_field", "field_id", "id"))},
+                    "custom_sale_value": {
+                        (("sale", "shop_id", "shop_id"), ("sale", "target_id", "id")),
+                        (("custom_field", "shop_id", "shop_id"), ("custom_field", "field_id", "id"))},
+                    "custom_observation_value": {
+                        (("observation", "shop_id", "shop_id"), ("observation", "target_id", "id")),
+                        (("custom_field", "shop_id", "shop_id"), ("custom_field", "field_id", "id"))},
+                    "custom_thought_value": {
+                        (("thoughts", "shop_id", "shop_id"), ("thoughts", "target_id", "id")),
+                        (("custom_field", "shop_id", "shop_id"), ("custom_field", "field_id", "id"))},
+                    "custom_field_gap": {(("custom_field", "shop_id", "shop_id"),
+                                          ("custom_field", "field_id", "id"))},
+                    "custom_field_suggestion": {(("shop", "shop_id", "id"),)},
+                    "custom_field_preview": {(("shop", "shop_id", "id"),)},
+                    "custom_field_alias": {(("custom_field", "shop_id", "shop_id"),
+                                            ("custom_field", "field_id", "id"))},
+                    "custom_import_mapping": {(("shop", "shop_id", "id"),)},
+                })
             for table, expected in foreign_keys.items():
                 groups = {}
                 for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
@@ -366,25 +669,69 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
         return False
 
 
-def migrate_v5_to_v6(conn):
-    """显式迁移已校验的 v5 连接；失败时 DDL 和版本号一起回滚。"""
-    if not database_schema_ready(conn, expected_version=5):
-        raise ValueError("迁移源必须是完整的 v5 数据库")
+def _migrate_in_savepoint(conn, name, ready_version, apply, result_version):
+    """在调用方事务内迁移；失败时 DDL 和版本号一起回滚。"""
+    if not database_schema_ready(conn, expected_version=ready_version):
+        raise ValueError(f"迁移源必须是完整的 v{ready_version} 数据库")
     if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
         raise ValueError("迁移源完整性检查失败")
+    conn.execute(f"SAVEPOINT {name}")
+    try:
+        apply(conn)
+        if not database_schema_ready(conn, expected_version=result_version):
+            raise ValueError("迁移后数据库未就绪")
+        conn.execute(f"RELEASE {name}")
+    except BaseException:
+        conn.execute(f"ROLLBACK TO {name}")
+        conn.execute(f"RELEASE {name}")
+        raise
+
+
+def _apply_v6(conn):
     if conn.execute("SELECT 1 FROM sqlite_master WHERE name IN ('thoughts', 'thought_tags')").fetchone():
         raise ValueError("v5 数据库已有随想表，请核对迁移状态")
-    conn.execute("SAVEPOINT thoughts_v6")
-    try:
-        _create_thought_schema(conn)
-        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
-        if not database_schema_ready(conn):
-            raise ValueError("迁移后数据库未就绪")
-        conn.execute("RELEASE thoughts_v6")
-    except BaseException:
-        conn.execute("ROLLBACK TO thoughts_v6")
-        conn.execute("RELEASE thoughts_v6")
-        raise
+    _create_thought_schema(conn)
+    conn.execute("UPDATE meta SET value='6' WHERE key='schema_version'")
+
+
+def _apply_v7(conn):
+    names = ('custom_field', 'custom_field_option', 'custom_field_config', 'custom_field_audit',
+             'custom_entry_value', 'custom_sale_value', 'custom_observation_value',
+             'custom_thought_value', 'custom_field_gap', 'custom_field_suggestion',
+             'custom_field_preview', 'custom_field_alias', 'custom_import_mapping')
+    placeholders = ",".join("?" for _ in names)
+    if conn.execute(
+            f"SELECT 1 FROM sqlite_master WHERE name IN ({placeholders})", names).fetchone():
+        raise ValueError("v6 数据库已有自定义字段表，请核对迁移状态")
+    _create_custom_field_schema(conn)
+    conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
+
+
+def migrate_v5_to_v6(conn):
+    """保留 v5 到 v6 的随想迁移；显式副本迁移会继续升到当前版本。"""
+    _migrate_in_savepoint(conn, "thoughts_v6", 5, _apply_v6, 6)
+
+
+def migrate_v6_to_v7(conn):
+    """为已校验的 v6 副本增加自定义字段表；不回填历史属性。"""
+    _migrate_in_savepoint(conn, "custom_fields_v7", 6, _apply_v7, SCHEMA_VERSION)
+
+
+def migrate_to_current(conn):
+    """按源版本逐级迁移。调用方必须先把源库只读复制到新目标。"""
+    version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    if not version:
+        raise ValueError("迁移源缺少 schema 版本")
+    current = int(version[0])
+    if current == 5:
+        migrate_v5_to_v6(conn)
+        current = 6
+    if current == 6:
+        migrate_v6_to_v7(conn)
+        return
+    if current == SCHEMA_VERSION and database_schema_ready(conn):
+        return
+    raise ValueError("迁移源版本不受支持")
 
 
 def default_db_path() -> str:
@@ -671,7 +1018,10 @@ class SqliteStore(Store):
             if not migrate:
                 raise ValueError("数据库未就绪，必须先显式初始化或迁移")
             if database_schema_ready(self.conn, expected_version=5):
-                migrate_v5_to_v6(self.conn)
+                migrate_to_current(self.conn)
+                return
+            if database_schema_ready(self.conn, expected_version=6):
+                migrate_v6_to_v7(self.conn)
                 return
             existing_meta = self.conn.execute("SELECT name FROM sqlite_master WHERE name='meta'").fetchone()
             if existing_meta:
@@ -754,6 +1104,7 @@ class SqliteStore(Store):
                     (str(SCHEMA_VERSION),))
         with self.transaction():
             _create_thought_schema(self.conn)
+            _create_custom_field_schema(self.conn)
 
     def close(self) -> None:
         self.conn.close()
@@ -1960,7 +2311,12 @@ class SqliteStore(Store):
                   "sale", "discrepancy", "import_batch",
                   'record', 'observation', 'dimension', 'recipe_version', 'import_identity',
                   'workspace_meta', 'agent_request', 'agent_import_preview',
-                  'thoughts', 'thought_tags']
+                  'thoughts', 'thought_tags',
+                  'custom_field_config', 'custom_field', 'custom_field_option',
+                  'custom_field_audit', 'custom_entry_value', 'custom_sale_value',
+                  'custom_observation_value', 'custom_thought_value', 'custom_field_gap',
+                  'custom_field_suggestion', 'custom_field_preview',
+                  'custom_field_alias', 'custom_import_mapping']
         out = {"schema_version": SCHEMA_VERSION, "shop_id": shop_id, "tables": {}}
         for t in tables:
             if t == "shop":
@@ -1969,6 +2325,15 @@ class SqliteStore(Store):
                 cur = self.conn.execute(f"SELECT * FROM {t} WHERE shop_id=?", (shop_id,))
             elif t in ("agent_request", "agent_import_preview"):
                 cur = self.conn.execute(f"SELECT * FROM {t} WHERE workspace_id=?", (shop_id,))
+            elif t == "custom_field_suggestion":
+                cur = self.conn.execute(
+                    "SELECT * FROM custom_field_suggestion WHERE shop_id=? ORDER BY created_at, id", (shop_id,))
+            elif t == "custom_field_preview":
+                cur = self.conn.execute(
+                    "SELECT * FROM custom_field_preview WHERE shop_id=? ORDER BY created_at, token", (shop_id,))
+            elif t == "custom_field_option":
+                cur = self.conn.execute(
+                    "SELECT * FROM custom_field_option WHERE shop_id=? ORDER BY field_id, position", (shop_id,))
             elif t == "thought_tags":
                 cur = self.conn.execute(
                     "SELECT * FROM thought_tags WHERE shop_id=? ORDER BY thought_id, position", (shop_id,))

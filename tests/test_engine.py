@@ -51,7 +51,20 @@ def make_xlsx(path: str, rows: list) -> None:
     sheet_xml = ('<?xml version="1.0" encoding="UTF-8"?>'
                  '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
                  "<sheetData>" + "".join(sheet_rows) + "</sheetData></worksheet>")
+    workbook = ('<?xml version="1.0" encoding="UTF-8"?>'
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    rels = ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            'Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" '
+            'Target="sharedStrings.xml"/></Relationships>')
     with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types></Types>")
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", rels)
         zf.writestr("xl/sharedStrings.xml", sst)
         zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
 
@@ -375,7 +388,7 @@ class TestSheet(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "a.xlsx")
             make_xlsx(path, [["日期", "金额"], ["2026-10-01", "1234"]])
-            rows = sheet.read_xlsx(path)
+            rows = sheet.read_xlsx(path)[0]
             self.assertEqual(rows[0], ["日期", "金额"])
             self.assertEqual(rows[1], ["2026-10-01", "1234"])
 
@@ -386,6 +399,32 @@ class TestSheet(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 sheet.read_table(path)
             self.assertIn("另存为", str(ctx.exception))
+
+    def test_entity_and_oversized_column_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "entity.xlsx")
+            _package(path, {"xl/workbook.xml": b"<!DOCTYPE x [<!ENTITY a 'x'>]><workbook>&a;</workbook>"})
+            with self.assertRaises(ValueError) as ctx:
+                sheet.read_xlsx(path)
+            self.assertIn("实体", str(ctx.exception))
+            path = os.path.join(tmp, "wide.xlsx")
+            _package(path, {"xl/worksheets/sheet1.xml": b'<worksheet><sheetData><row r="1"><c r="XFE1"><v>1</v></c></row></sheetData></worksheet>'})
+            with self.assertRaises(ValueError) as ctx:
+                sheet.read_xlsx(path)
+            self.assertIn("XFD", str(ctx.exception))
+
+
+def _package(path, members):
+    workbook = ('<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    rels = ('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '</Relationships>')
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types></Types>")
+        archive.writestr("xl/workbook.xml", members.get("xl/workbook.xml", workbook.encode()))
+        archive.writestr("xl/_rels/workbook.xml.rels", rels)
+        archive.writestr("xl/worksheets/sheet1.xml", members.get("xl/worksheets/sheet1.xml", b"<worksheet></worksheet>"))
 
 
 class TestImport(TempDb):

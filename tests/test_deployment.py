@@ -70,7 +70,7 @@ class DeploymentTests(unittest.TestCase):
         for sql, undo in (("ALTER TABLE product RENAME COLUMN category TO broken_category",
                            "ALTER TABLE product RENAME COLUMN broken_category TO category"),
                           ("UPDATE meta SET value='1' WHERE key='schema_version'",
-                           "UPDATE meta SET value='5' WHERE key='schema_version'")):
+                           "UPDATE meta SET value='7' WHERE key='schema_version'")):
             with closing(sqlite3.connect(str(self.db))) as conn:
                 conn.execute(sql)
                 conn.commit()

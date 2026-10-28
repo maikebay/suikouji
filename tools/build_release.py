@@ -33,6 +33,7 @@ FILES = (
     "tests/test_agent_atomicity.py", "tests/test_agent_bot.py", "tests/test_agent_final_regressions.py",
     "tests/test_agent_http_contract.py", "tests/test_agent_legacy_recovery.py", "tests/test_agent_normalization.py",
     "tests/test_agent_preview.py", "tests/test_agent_store_compat.py", "tests/test_bot_delivery.py",
+    "tests/test_custom_fields.py",
     "tests/test_deployment.py", "tests/test_engine.py", "tests/test_foundation.py", "tests/test_ilink.py",
     "tests/test_observe.py", "tests/test_parser_boundaries.py", "tests/test_prepare_deploy.py",
     "tests/test_release_package.py", "tests/test_review.py", "tests/test_runtime_backup.py",
