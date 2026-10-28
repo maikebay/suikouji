@@ -62,7 +62,7 @@ PROFILES = ProfileRegistry((
     IndustryProfile(
         "restaurant", "餐饮经营", "沿用当前收入、采购、费用、销量和配方成本模型",
         ledger_categories=("营业额", "食材成本", "房租", "人工", "水电"),
-        observation_kinds=("客流", "订单", "天气", "排班", "评价"),
+        observation_kinds=("客流", "订单", "天气", "排班", "评价", "生意"),
     ),
     IndustryProfile(
         "retail", "零售经营", "为商品、采购、销售和库存模块预留的行业边界",

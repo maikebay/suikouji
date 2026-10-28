@@ -76,7 +76,9 @@ _CAPABILITIES = (
         "在餐饮 profile 下提取收入、采购、费用、销量和经营观测",
         "自然语言原话或结构化账目",
         "金额归属、日期、金额口径不明确时必须先询问",
-        ("当前解析器是受控规则，不是任意自然语言理解", "账表是金额权威，观测不能回加到账务"),
+        ("当前解析器是受控规则，不是任意自然语言理解",
+         "账表是金额权威，观测不能回加到账务",
+         "定性客流和生意好坏只记受控说法，不编人数、占比或金额"),
     ),
     Capability(
         "ledger.correction",
@@ -194,12 +196,14 @@ def _structured_schema() -> dict:
         "商品名不得有首尾空白；金额未知填null，不传product_id。")
     observation = row(
         ["date", "kind", "measure", "source_quote", "assertion"],
-        {**common, "kind": {"type": "string", "enum": ["客流", "订单", "天气", "排班", "评价"]},
-         "measure": {"type": "string", "enum": ["人数", "桌数", "单量", "天气", "出勤", "评分", "差评数"]},
+        {**common, "kind": {"type": "string", "enum": ["客流", "订单", "天气", "排班", "评价", "生意"]},
+         "measure": {"type": "string", "enum": ["人数", "桌数", "情况", "单量", "天气", "出勤", "评分", "差评数", "好坏"]},
          "value_num": number, "value_text": text, "unit": {"type": "string", "maxLength": 100}, "subject": text},
         "value_num/value_text精确一个。客流人数/人、桌数/桌；订单单量/单；评价评分/分、差评数/个。"
+        "客流情况只填 value_text：老客多、人多、客人少、客流一般，不填人数、unit 或占比。"
+        "生意好坏只填 value_text：还可以、不错、一般、不好，不填金额、评分或 unit。"
         "天气天气使用阴/晴/雨/多云/雪；排班出勤使用请假/请了假/缺勤/迟到/早退/休息/上班/到岗。"
-        "天气和排班不填unit或填空串。不得提供财务派生观测。")
+        "天气、排班、客流情况和生意好坏不填 unit 或填空串。不得把「天气很好」猜成晴，不得提供财务派生观测。")
     thought = row(
         ["date", "body", "source_quote"],
         {"date": {"type": "string", "format": "date", "pattern": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
@@ -247,15 +251,21 @@ def _structured_example() -> dict:
         "workspace_id": "replace-with-authorized-workspace-id",
         "request_id": "stable-message-id-001",
         "source": "agent",
-        "text": "今天营业额1300元，阴天。记个想法：明天想用南瓜做甜品，可以搭配木薯、银耳、枸杞。#新品 #南瓜",
+        "text": "今天营业额1300元，阴天，生意还可以，老顾客非常的多。记个想法：明天想用南瓜做甜品，可以搭配木薯、银耳、枸杞。#新品 #南瓜",
         "received_at": "2026-10-26T20:00:00+08:00",
         "structured": {
             "entries": [{"date": "2026-10-26", "type": "revenue", "category": "营业额", "amount": 1300,
                          "amount_basis": "gross", "granularity": "daily", "assertion": "actual",
                          "source_quote": "今天营业额1300元"}],
             "sales": [],
-            "observations": [{"date": "2026-10-26", "kind": "天气", "measure": "天气",
-                              "value_text": "阴", "assertion": "actual", "source_quote": "阴天"}],
+            "observations": [
+                {"date": "2026-10-26", "kind": "天气", "measure": "天气",
+                 "value_text": "阴", "assertion": "actual", "source_quote": "阴天"},
+                {"date": "2026-10-26", "kind": "生意", "measure": "好坏",
+                 "value_text": "还可以", "assertion": "actual", "source_quote": "生意还可以"},
+                {"date": "2026-10-26", "kind": "客流", "measure": "情况",
+                 "value_text": "老客多", "assertion": "actual", "source_quote": "老顾客非常的多"},
+            ],
             "thoughts": [{"date": "2026-10-26", "title": "南瓜甜品试做想法",
                           "body": "明天想用南瓜做甜品，可以搭配木薯、银耳、枸杞。", "tags": ["新品", "南瓜"],
                           "source_quote": "明天想用南瓜做甜品，可以搭配木薯、银耳、枸杞。#新品 #南瓜"}],
@@ -282,6 +292,9 @@ def product_capabilities() -> dict:
                 "收入、采购、费用、销量的金额归属",
                 "付款日期与费用归属月份",
                 "营业总额、销售明细、结算实收之间的金额口径",
+                "定性客流的人数、桌数或占比",
+                "生意好坏对应的金额或评分",
+                "「天气很好」对应的晴阴雨雪",
             ],
             "input_preparation": {
                 "user_speech_may_be_messy": True,
@@ -329,13 +342,35 @@ def product_capabilities() -> dict:
                                 "检测到改归档日指令时保留原话并说明需要外部Agent，不默认归今天。"
                                 "不承诺任意口语理解或跨句续写。",
                 },
+                "qualitative_observations": {
+                    "restaurant_only": True,
+                    "no_numeric_inference": True,
+                    "traffic": {
+                        "kind": "客流",
+                        "measure": "情况",
+                        "value_text": ["老客多", "人多", "客人少", "客流一般"],
+                        "examples": ["老顾客非常的多", "老客多", "人很多", "客人少", "客流一般"],
+                    },
+                    "business": {
+                        "kind": "生意",
+                        "measure": "好坏",
+                        "value_text": ["还可以", "不错", "一般", "不好"],
+                        "examples": ["生意还可以", "生意不错", "生意一般", "生意不好", "生意有点差"],
+                    },
+                    "forbid": ["value_num", "人数", "金额", "占比", "评分"],
+                    "guidance": "定性说法提交受控 value_text，source_quote 用原话连续片段。"
+                                "不能把「老客多」写成人数，不能把「生意还可以」写成金额或评分。"
+                                "天气仍只用阴/晴/雨/多云/雪，不要把「天气很好」猜成晴。"
+                                "有明确人数、桌数时仍用客流的人数/桌数和 value_num。",
+                },
                 "guidance": (
                     "用户口语可能有语气词、跳跃叙述、多个事件和推测。调用方 Agent 先整理，"
                     "分开明确发生的账目、销量、受控非金额观测和随想；财务仍要求assertion=actual，"
                     "随想是记事，不接受assertion、类型、任务、状态、截止时间或金额字段。"
                     "随想可保留想法、判断、预算和配方想法的正文，不造任务或财务投影。"
                     "保留逐字原话与每行来源片段；不确定或不支持的片段放入 leftovers 并说明。"
-                    "‘大概做了1300’‘花了两百多’‘可能收入一千左右’不能变成精确金额；"
+                    "「老客多」「生意还可以」等定性说法按 qualitative_observations 写入观测，不编人数或金额；"
+                    "「天气很好」不能猜成晴。‘大概做了1300’‘花了两百多’‘可能收入一千左右’不能变成精确金额；"
                     "可先保存明确随想和其他明确内容，再说明尚未入账的片段及需要确认的信息。"
                     "无标签照常保存，不追问标签；信息明确时直接提取，不因口语化要求重说。"
                     "真正缺少归属或存在冲突时先追问，不能擅自补值；非法日期不能改为今天。"
@@ -365,7 +400,7 @@ def product_capabilities() -> dict:
                     "entries": "营业收入、进货支出和各项费用",
                     "sales": "各商品的销量和销售金额",
                     "summary": "所选时间内的收支汇总",
-                    "observations": "天气、客流等经营记录",
+                    "observations": "天气、客流和生意好坏等经营记录",
                     "thoughts": "新品灵感和生意随想",
                     "timeline": "包含随想的原话记录",
                 },
@@ -423,6 +458,8 @@ def product_capabilities() -> dict:
                 "new_normalization_includes_thoughts": True,
                 "historical_cached_receipts_unchanged": True,
                 "report_unparsed_fragments_from": "parsed.leftovers",
+                "coverage_field": "coverage",
+                "business_points_saved_from": ["entries", "sales", "observations", "thoughts"],
                 "partial_may_include_financial_rows": True,
                 "partial_may_include_thoughts": True,
                 "unknown_result_text": "暂时没拿到结果，正在核对。",
@@ -433,6 +470,9 @@ def product_capabilities() -> dict:
                 "guidance": (
                     "按实际回执分别报告日期、原话、账目/销量、观测、已保存多少条随想和未解析片段；"
                     "随想或观测已保存不等于金额已入账，partial不能说成全部成功或一概失败。"
+                    "coverage.business_points_saved 为真表示账目、销量、观测或随想已记下；"
+                    "同时 has_unstructured_fragments 为真时，partial 只表示还有未结构化原话，"
+                    "不能把整单说成没记上。定性客流和生意好坏没有人数或金额，不能加进汇总。"
                     "历史缓存可能没有thoughts，按空列表读取但不改写缓存；新normalization含thoughts。"
                     "thoughts缺省与显式[]是不同原始请求；校验补默认值不改变原始指纹，同号重试须用首次完整请求。"
                     "明确原话未被规则识别时说明解析能力缺口，不归咎用户。"

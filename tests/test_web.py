@@ -60,7 +60,7 @@ class WebTests(unittest.TestCase):
     def test_nonmoney_partial_and_unparsed_never_add_ledger(self):
         before = self.request("GET", "/api/state")[1]["entries"]
         cases = [("客流零人，上座20桌，外卖30单，差评三个", "parsed"),
-                 ("气温28度", "unparsed"), ("今天下雨，生意差", "partial")]
+                 ("气温28度", "unparsed"), ("今天下雨，生意差", "parsed")]
         for i, (text, expected) in enumerate(cases):
             status, result = self.request("POST", "/api/records", {"text": text, "request_id": f"nonmoney-{i}"})
             self.assertEqual(status, 200)

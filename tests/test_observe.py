@@ -134,12 +134,68 @@ class LayerTests(unittest.TestCase):
         self.assertEqual(len(self.observations()), 4)
 
     def test_unparsed_and_partial_keep_verbatim_source(self):
-        self.ingest("  生意有点差  ")
-        partial = self.ingest("今天下雨，生意差")
+        self.ingest("  外面还有跑马拉松的  ")
+        partial = self.ingest("今天下雨，可能影响生意")
         self.assertEqual(partial["status"], "partial")
-        self.assertEqual(partial["parsed"]["leftovers"], ["生意差"])
+        self.assertEqual(partial["parsed"]["leftovers"], ["可能影响生意"])
+        self.assertEqual([o["kind"] for o in partial["observations"]], ["天气"])
         rows = self.store.record_list("s", DAY, DAY, "unparsed")
-        self.assertEqual([r["raw_text"] for r in rows], ["  生意有点差  "])
+        self.assertEqual([r["raw_text"] for r in rows], ["  外面还有跑马拉松的  "])
+        self.assertEqual(self.store.summary("s", "0000", "9999")["count"], 0)
+
+    def test_qualitative_traffic_and_business_do_not_invent_numbers(self):
+        phrases = {
+            "老顾客非常的多": ("客流", "情况", "老客多"),
+            "老客多": ("客流", "情况", "老客多"),
+            "回头客很多": ("客流", "情况", "老客多"),
+            "人很多": ("客流", "情况", "人多"),
+            "客人多": ("客流", "情况", "人多"),
+            "客人少": ("客流", "情况", "客人少"),
+            "客流少": ("客流", "情况", "客人少"),
+            "客流一般": ("客流", "情况", "客流一般"),
+            "生意还可以": ("生意", "好坏", "还可以"),
+            "生意不错": ("生意", "好坏", "不错"),
+            "生意很好": ("生意", "好坏", "不错"),
+            "生意一般": ("生意", "好坏", "一般"),
+            "生意不好": ("生意", "好坏", "不好"),
+            "生意有点差": ("生意", "好坏", "不好"),
+            "生意差": ("生意", "好坏", "不好"),
+        }
+        for text, expected in phrases.items():
+            with self.subTest(text=text):
+                result = self.ingest("今天" + text, dedup_ref=text)
+                self.assertEqual(result["status"], "parsed", result["parsed"]["leftovers"])
+                self.assertEqual(result["entry_ids"], [])
+                self.assertEqual(result["sale_ids"], [])
+                self.assertEqual(result["parsed"]["leftovers"], [])
+                row = result["observations"][0]
+                self.assertEqual((row["kind"], row["measure"], row["value_text"]), expected)
+                self.assertIsNone(row["value_num"])
+                self.assertEqual(row["unit"], "")
+                self.assertEqual(row["source_span"], text)
+        self.assertEqual(self.store.summary("s", "0000", "9999")["count"], 0)
+        self.assertEqual(self.store.summary("s", "0000", "9999")["revenue"], 0)
+
+    def test_numeric_traffic_stays_numeric_beside_qualitative_words(self):
+        result = self.ingest("今天客流120人，老客多，生意还可以，营业额1300元")
+        self.assertEqual(result["status"], "parsed")
+        self.assertEqual([(e["type"], e["amount"]) for e in result["parsed"]["entries"]],
+                         [("revenue", 1300)])
+        labels = {(o["kind"], o["measure"]): (o["value_num"], o["value_text"])
+                  for o in result["observations"]}
+        self.assertEqual(labels[("客流", "人数")], (120, None))
+        self.assertEqual(labels[("客流", "情况")], (None, "老客多"))
+        self.assertEqual(labels[("生意", "好坏")], (None, "还可以"))
+        self.assertEqual(self.store.summary("s", "0000", "9999")["revenue"], 1300)
+
+    def test_qualitative_patterns_do_not_guess_nearby_narratives(self):
+        for text in ("可能影响生意", "生意差不多", "生意好像很难", "如果生意还可以",
+                     "天气很好", "营业额一般", "客人不少"):
+            with self.subTest(text=text):
+                result = self.ingest(text, dedup_ref=text)
+                self.assertEqual(result["observations"], [])
+                self.assertEqual(result["entry_ids"], [])
+                self.assertEqual(result["sale_ids"], [])
 
     def test_chinese_zero_and_count_units(self):
         self.ingest("客流零人，上座20桌，外卖30单，差评三个")

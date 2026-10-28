@@ -13,10 +13,26 @@ from . import parser
 from .model import SOURCE_CHAT, canon_unit
 from .thoughts import extract_native, mask_spans, receipt_date, source_segments
 
-PARSER_VERSION = "observe-thoughts-2"
+PARSER_VERSION = "observe-thoughts-3"
 KIND_BY_TYPE = {"revenue": "营业额", "purchase": "进货", "expense": "支出"}
 NUMBER = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万]+)"
 TIME = r"(?:大前天|前天|昨天|昨日|今天|今日|明天|当天)"
+_DEGREE = r"(?:非常|特别|相当|十分|很|挺)"
+# 定性说法只归一到受控标签。匹配原文进 source_span，不产生人数或金额。
+_BUSINESS_TEXT = {
+    "还可以": "还可以", "还行": "还可以", "尚可": "还可以",
+    "非常不错": "不错", "挺不错": "不错", "不错": "不错",
+    "非常好": "不错", "很好": "不错", "挺好": "不错", "相当好": "不错", "好": "不错",
+    "比较一般": "一般", "一般": "一般",
+    "不怎么好": "不好", "不太好": "不好", "不好": "不好",
+    "非常差": "不好", "很差": "不好", "较差": "不好", "有点差": "不好",
+    "有些差": "不好", "比较差": "不好", "差": "不好",
+}
+_BUSINESS_PATTERN = (
+    "生意(?P<value>"
+    + "|".join(sorted((word for word in _BUSINESS_TEXT if word not in {"好", "差"}), key=len, reverse=True))
+    + r"|差(?!不多|距|别)|好(?!像|象))"
+)
 
 # 每条规则指定值组、单位和可选主体组。观测没有任何入账权限。
 RECORD_TYPES = {
@@ -25,6 +41,12 @@ RECORD_TYPES = {
         {"pattern": rf"来了\s*(?P<value>{NUMBER})\s*(?:人|位客人|个客人)", "measure": "人数", "unit": "人"},
         {"pattern": rf"(?P<value>{NUMBER})\s*(?:个|位)?客人", "measure": "人数", "unit": "人"},
         {"pattern": rf"上座\s*(?P<value>{NUMBER})\s*桌", "measure": "桌数", "unit": "桌"},
+        {"pattern": rf"(?P<value>老(?:顾客|客人|客){_DEGREE}?的?多(?!少))", "measure": "情况", "text": "老客多"},
+        {"pattern": rf"(?P<value>回头客{_DEGREE}?的?多(?!少))", "measure": "情况", "text": "老客多"},
+        {"pattern": rf"(?<![老回])(?P<value>(?:客人|客流|人气|人){_DEGREE}?的?多(?!少))", "measure": "情况", "text": "人多"},
+        {"pattern": rf"(?P<value>(?:客人|客流|人)(?:{_DEGREE}|比较|有点|有些)?少)", "measure": "情况", "text": "客人少"},
+        {"pattern": r"(?P<value>客人不多|没(?:什么|啥)客人|没几个客人)", "measure": "情况", "text": "客人少"},
+        {"pattern": rf"(?P<value>(?:客流|客人|人气)(?:比较|较为|还算|还)?一般)", "measure": "情况", "text": "客流一般"},
     ],
     "订单": [
         {"pattern": rf"(?P<value>{NUMBER})\s*单(?:外卖|堂食)", "measure": "单量", "unit": "单"},
@@ -36,7 +58,8 @@ RECORD_TYPES = {
         {"pattern": r"(?P<value>阴天)", "measure": "天气", "text": "阴"},
         {"pattern": r"(?P<value>多云)", "measure": "天气", "text": "多云"},
         {"pattern": r"(?P<value>下大雪|下小雪|下雪|大雪|小雪)", "measure": "天气", "text": "雪"},
-        {"pattern": rf"(?:天气|{TIME})\s*(?:是|为)?\s*(?P<value>晴|雨|阴|雪)", "measure": "天气", "text": True},
+        # 「阴天」等完整词由上面的规则认领；这里不把「今天阴天」切成「今天阴」再留下「天」。
+        {"pattern": rf"(?:天气|{TIME})\s*(?:是|为)?\s*(?P<value>晴|雨|阴|雪)(?!天)", "measure": "天气", "text": True},
     ],
     "排班": [
         {"pattern": rf"(?P<subject>[一-龥]{{2,4}}?)\s*(?:{TIME}\s*)?(?P<value>请假|请了假|缺勤|迟到|早退|休息|上班|到岗)",
@@ -46,6 +69,9 @@ RECORD_TYPES = {
         {"pattern": r"评分\s*(?P<value>\d+(?:\.\d+)?)\s*分?", "measure": "评分", "unit": "分"},
         {"pattern": rf"(?P<value>{NUMBER})\s*个?差评", "measure": "差评数", "unit": "个"},
         {"pattern": rf"差评\s*(?P<value>{NUMBER})\s*个?", "measure": "差评数", "unit": "个"},
+    ],
+    "生意": [
+        {"pattern": _BUSINESS_PATTERN, "measure": "好坏", "text_map": _BUSINESS_TEXT},
     ],
 }
 
@@ -80,13 +106,22 @@ def find_observations(text, occurred_at):
                     if len(subject) < 2 or subject in ("我们", "大家", "店里"):
                         continue
                 raw = match.group("value")
+                text_map = rule.get("text_map")
                 text_value = rule.get("text")
-                value = None if text_value else (float(raw) if re.fullmatch(r"\d+(?:\.\d+)?", raw)
-                                                else parser.cn_to_number(raw))
+                if text_map is not None:
+                    if raw not in text_map:
+                        continue
+                    value, stored_text = None, text_map[raw]
+                elif text_value:
+                    value, stored_text = None, raw if text_value is True else text_value
+                else:
+                    stored_text = None
+                    value = (float(raw) if re.fullmatch(r"\d+(?:\.\d+)?", raw)
+                             else parser.cn_to_number(raw))
                 hits.append({
                     "kind": kind, "subject": subject, "measure": rule["measure"],
                     "value_num": value,
-                    "value_text": (raw if text_value is True else text_value) or None,
+                    "value_text": stored_text,
                     "unit": rule.get("unit", ""), "confidence": 1.0,
                     "occurred_at": _date_at(text, match.end(), base),
                     "source_span": match.group(), "start": match.start(), "end": match.end(),
@@ -129,6 +164,26 @@ def normalize(store, shop_id, rows):
         row["unit"] = store.dimension_resolve(shop_id, "unit", canon_unit(row.get("unit") or ""))
         out.append(row)
     return out
+
+
+def capture_coverage(entries, sales, observations, thoughts, leftovers):
+    """区分已落库的经营要点和仍未结构化的原话片段。"""
+    fragments = [item for item in leftovers or [] if isinstance(item, str) and item.strip()]
+    return {
+        "business_points_saved": bool(entries or sales or observations or thoughts),
+        "has_unstructured_fragments": bool(fragments),
+    }
+
+
+def fragment_notice(leftovers, *, business_points_saved):
+    """给回执用的中文说明。已记下的要点和未结构化原话分开说。"""
+    pieces = [text for text in leftovers or [] if isinstance(text, str) and text.strip()]
+    if not pieces:
+        return ""
+    quoted = "；".join(f"“{text}”" for text in pieces)
+    if business_points_saved:
+        return f"经营要点已记下。还有未结构化的原话：{quoted}。这些原话里的金额未入账。"
+    return f"以下片段尚未结构化，涉及的金额未入账：{quoted}。"
 
 
 def dedup_keys(rows):

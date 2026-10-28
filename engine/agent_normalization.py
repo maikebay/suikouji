@@ -159,6 +159,26 @@ def _sale(row, raw_text, label):
     return copy.deepcopy(row)
 
 
+def _text_choices(kind, measure):
+    """受控文本标签。定性客流和生意好坏不接受自由文本，也不接受人数或金额。"""
+    choices = set()
+    raw = False
+    for rule in RECORD_TYPES[kind]:
+        if rule["measure"] != measure:
+            continue
+        mapped = rule.get("text_map")
+        if mapped:
+            choices.update(mapped.values())
+        text = rule.get("text")
+        if text is True:
+            raw = True
+        elif isinstance(text, str):
+            choices.add(text)
+    if raw:
+        choices |= WEATHER if kind == "天气" else ATTENDANCE if kind == "排班" else set()
+    return choices
+
+
 def _observation_rule(row):
     # Use only the existing, nonfinancial observation vocabulary. The regexes
     # are never executed here: the Agent has already supplied the domain facts.
@@ -178,10 +198,10 @@ def _observation(row, raw_text, label):
     rule = _observation_rule(row)
     if ("value_num" in row) == ("value_text" in row):
         raise ValueError(f"{label} 必须且只能提供 value_num 或 value_text")
-    text_kind = bool(rule.get("text"))
-    if text_kind:
+    choices = _text_choices(row["kind"], row["measure"])
+    if choices:
         value = _text(row.get("value_text"), f"{label}.value_text")
-        _choice(value, WEATHER if row["kind"] == "天气" else ATTENDANCE, f"{label}.value_text")
+        _choice(value, choices, f"{label}.value_text")
     else:
         _number(row.get("value_num"), f"{label}.value_num")
     if "unit" in row and row["unit"] != rule.get("unit", ""):
