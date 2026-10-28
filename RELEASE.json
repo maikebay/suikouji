@@ -3,7 +3,7 @@
   "contains_user_data": false,
   "deployment": "authenticated-http-api",
   "files": {
-    ".dockerignore": "6e57b15e0ef58f7b22e02f3774d7721f5792e1f970f9b75f3128dd87c6830281",
+    ".dockerignore": "ebd4dc243692afa55a38a0b400010e3405e66dbfe6e0dcbd754755543d069160",
     ".gitignore": "a209172879c66ac9f581e392f402814d9ab1213802c6a0e0df265dd0eccdbb0c",
     "CONTEXT.md": "461830c12b009c1036e8816707e195334ba6481e2b63d2062f5430dae7d8c407",
     "Dockerfile": "98c87facb418707382e08d23a48ae56e57a36a04a3cac390cb7cd4b7a289316c",
