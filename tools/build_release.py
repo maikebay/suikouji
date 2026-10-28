@@ -18,7 +18,7 @@ VERSION = "0.2.0-staging"
 FILES = (
     "Dockerfile", "compose.yaml", ".dockerignore", ".gitignore", "README.md", "CONTEXT.md",
     "engine/__init__.py", "engine/accounting.py", "engine/agent_service.py", "engine/agent_normalization.py", "engine/backup.py",
-    "engine/capabilities.py", "engine/cli.py", "engine/cost.py", "engine/deployment.py",
+    "engine/capabilities.py", "engine/cli.py", "engine/cost.py", "engine/custom_fields.py", "engine/deployment.py",
     "engine/importer.py", "engine/model.py", "engine/observe.py", "engine/parser.py",
     "engine/profile.py", "engine/reconcile.py", "engine/report.py", "engine/review.py",
     "engine/runtime.py", "engine/sheet.py", "engine/store.py", "engine/thoughts.py", "engine/web.py",
