@@ -76,6 +76,9 @@ class ThoughtsContractTests(unittest.TestCase):
         self.assertEqual(len(result["thoughts"]), 1)
         self.assertEqual(result["thoughts"][0]["date"], "2026-10-26")
         self.assertEqual(result["thoughts"][0]["tags"], ["新品", "南瓜"])
+        qualitative = {(row["kind"], row["measure"], row["value_text"], row["value_num"])
+                       for row in result["observations"] if row["measure"] in {"情况", "好坏"}}
+        self.assertEqual(qualitative, {("生意", "好坏", "还可以", None), ("客流", "情况", "老客多", None)})
         self.assertEqual(result["normalization"], example["structured"])
         self.assertIn("已保存 1 条随想", ILinkBotWorker.format_reply(result))
         self.assertEqual(service.summary(Principal("presentation", "owner"), "shop", "2026-10")["revenue"], 1300)
@@ -138,6 +141,17 @@ class ThoughtsContractTests(unittest.TestCase):
         self.assertTrue(policy["new_normalization_includes_thoughts"])
         self.assertTrue(policy["unknown_result_retry_same_request"])
         self.assertEqual(policy["unknown_result_text"], "暂时没拿到结果，正在核对。")
+        qualitative = self.preparation["qualitative_observations"]
+        self.assertTrue(qualitative["no_numeric_inference"])
+        self.assertEqual(qualitative["traffic"]["value_text"], ["老客多", "人多", "客人少", "客流一般"])
+        self.assertEqual(qualitative["business"]["value_text"], ["还可以", "不错", "一般", "不好"])
+        self.assertIn("value_num", qualitative["forbid"])
+        schema = self.preparation["structured_schema"]["properties"]["observations"]["items"]
+        self.assertIn("生意", schema["properties"]["kind"]["enum"])
+        self.assertIn("情况", schema["properties"]["measure"]["enum"])
+        self.assertIn("好坏", schema["properties"]["measure"]["enum"])
+        self.assertEqual(policy["coverage_field"], "coverage")
+        self.assertIn("observations", policy["business_points_saved_from"])
 
 
 class ReadableReplyAssertions:
@@ -157,11 +171,28 @@ class ThoughtsReplyTests(ReadableReplyAssertions, unittest.TestCase):
             self.assertNotIn(phrase, text)
         self.assert_readable(text)
 
+    def test_saved_points_and_bare_fragments_use_different_wording(self):
+        saved = receipt(thoughts=False, status="partial",
+                        observations=[{"kind": "生意", "value_text": "还可以"}])
+        saved["parsed"]["leftovers"] = ["今天天气很好"]
+        text = ILinkBotWorker.format_reply(saved)
+        self.assertIn("经营观测 1 条", text)
+        self.assertIn("经营要点已记下", text)
+        self.assertIn("未结构化", text)
+        self.assertIn("今天天气很好", text)
+        bare = receipt(thoughts=False, status="unparsed")
+        bare["parsed"]["leftovers"] = ["大概做了1300"]
+        text = ILinkBotWorker.format_reply(bare)
+        self.assertNotIn("经营要点已记下", text)
+        self.assertIn("尚未结构化", text)
+        self.assertIn("金额未入账", text)
+        self.assert_readable(text)
+
     def test_partial_separates_saved_thoughts_and_unposted_amount(self):
         data = receipt(status="partial", entries=[ENTRY])
         data["parsed"]["leftovers"] = ["大概做了1300", "天气很好"]
         text = ILinkBotWorker.format_reply(data)
-        for phrase in ("账目 1 条", "已保存 1 条随想", "尚待核对", "金额未入账", "大概做了1300", "不要重发整段原话"):
+        for phrase in ("账目 1 条", "已保存 1 条随想", "经营要点已记下", "未结构化", "金额未入账", "大概做了1300", "不要重发整段原话"):
             self.assertIn(phrase, text)
         self.assertNotIn("全部", text)
         self.assert_readable(text)
@@ -241,6 +272,8 @@ class ThoughtsCliTests(ReadableReplyAssertions, unittest.TestCase):
         self.assertIn("已记账", text)
         self.assertIn("已保存 1 条随想", text)
         self.assertIn("花了两百多", text)
+        self.assertIn("经营要点已记下", text)
+        self.assertIn("未结构化", text)
         self.assertIn("金额未入账", text)
         self.assertNotIn("撤销", text)
         self.assert_readable(text)

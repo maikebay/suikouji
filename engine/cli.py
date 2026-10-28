@@ -30,7 +30,7 @@ from .model import (
     round2,
     today_iso,
 )
-from .observe import backfill_records, ingest
+from .observe import backfill_records, fragment_notice, ingest
 from .reconcile import persist, render_questions, scan
 from .report import (
     day_report,
@@ -148,7 +148,7 @@ def cmd_record(args) -> int:
             lines.append(_thought_receipt(thoughts))
         if result.get("leftovers"):
             lines.append("")
-            lines.append("以下片段尚待核对，涉及的金额未入账：" + "；".join(f"“{text}”" for text in result["leftovers"]) + "。")
+            lines.append(fragment_notice(result["leftovers"], business_points_saved=True))
             lines.append("未识别的内容可交给已连接的外部助手整理；请先核对已有记录，不要重发整段原话。")
         elif status == "partial":
             lines.append("还有部分内容待核对，未处理部分涉及的金额未入账。")
@@ -184,7 +184,7 @@ def cmd_record(args) -> int:
     if any("归档日" in str(warning) for warning in receipt.get("warnings") or []):
         hint += "\n指定随想归档日需要外部助手整理，相关随想尚未保存。"
     if result.get("leftovers"):
-        hint += "\n尚待核对的片段：" + "；".join(f"“{text}”" for text in result["leftovers"]) + "。"
+        hint += "\n尚未结构化的原话：" + "；".join(f"“{text}”" for text in result["leftovers"]) + "。"
     _out(args, hint, {"record_id": receipt["record"]["id"], "status": receipt["status"],
                       "recorded": [], "observations": [], "thoughts": [], "duplicate": False,
                       "leftovers": result.get("leftovers", []), "hint": hint})

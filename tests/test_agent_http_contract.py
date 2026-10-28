@@ -106,6 +106,8 @@ class AgentHttpContractTests(unittest.TestCase):
                          [("2026-10-25", "阴")])
         self.assertTrue(first["parsed"]["leftovers"])
         self.assertFalse(any("1300" in value for value in first["parsed"]["leftovers"]))
+        self.assertTrue(first["coverage"]["business_points_saved"])
+        self.assertTrue(first["coverage"]["has_unstructured_fragments"])
         status, _, replay = self.request("POST", "/v1/captures", payload)
         self.assertEqual(status, 200)
         self.assertEqual(replay, {**first, "duplicate": True})
@@ -228,11 +230,15 @@ class AgentHttpContractTests(unittest.TestCase):
             "received_at": "2026-10-25T20:00:00+08:00",
         })
         self.assertEqual(status, 200)
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "parsed")
         self.assertEqual(result["entries"], [])
         self.assertEqual(result["sales"], [])
-        self.assertEqual([o["kind"] for o in result["observations"]], ["天气"])
-        self.assertTrue(result["parsed"]["leftovers"])
+        self.assertEqual(sorted((o["kind"], o["value_text"], o["value_num"]) for o in result["observations"]),
+                         [("天气", "阴", None), ("生意", "不好", None)])
+        self.assertEqual(result["parsed"]["leftovers"], [])
+        self.assertEqual(result["coverage"], {
+            "business_points_saved": True, "has_unstructured_fragments": False})
+        self.assertEqual(self.request("GET", "/v1/summary?workspace_id=shop&month=2026-10")[2]["summary"]["revenue"], 0)
 
     def test_known_v1_routes_reject_unsupported_methods_with_exact_allow(self):
         routes = (

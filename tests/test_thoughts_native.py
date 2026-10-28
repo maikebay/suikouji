@@ -135,8 +135,7 @@ class NativeThoughtTests(unittest.TestCase):
     def test_hidden_notes_are_hard_boundaries_with_verbatim_leftovers(self):
         for sep in ("\n", "\r\n"):
             for before, after in (("收入", "12"), ("客流", "10人"),
-                                  ("牛肉面卖了", "3份"),
-                                  ("生意还可以", "老顾客非常多")):
+                                  ("牛肉面卖了", "3份")):
                 raw = before + sep + "记个想法：明天试新品" + sep + after
                 with self.subTest(raw=raw):
                     result = self.ingest(raw)
@@ -162,8 +161,25 @@ class NativeThoughtTests(unittest.TestCase):
     def test_mixed_observation_leftovers_and_entry_notes_are_source_slices(self):
         raw = "生意还可以客流10人老顾客很多。记个想法：试新品"
         result = self.ingest(raw)
-        self.assertEqual(result["parsed"]["leftovers"], ["生意还可以", "老顾客很多"])
-        self.assertEqual(result["observations"][0]["source_span"], "客流10人")
+        self.assertEqual(result["parsed"]["leftovers"], [])
+        spans = {o["source_span"]: (o["kind"], o["measure"], o["value_num"], o["value_text"])
+                 for o in result["observations"]}
+        self.assertEqual(spans["客流10人"][0:3], ("客流", "人数", 10))
+        self.assertEqual(spans["生意还可以"], ("生意", "好坏", None, "还可以"))
+        self.assertEqual(spans["老顾客很多"], ("客流", "情况", None, "老客多"))
+        self.assertEqual(self.store.summary("s", "0000", "9999")["revenue"], 0)
+        raw = "生意还可以\n记个想法：明天试新品\n老顾客非常多"
+        result = self.ingest(raw)
+        self.assertEqual(result["status"], "parsed")
+        self.assertEqual(result["entry_ids"], [])
+        self.assertEqual(result["parsed"]["leftovers"], [])
+        self.assertEqual(sorted((o["kind"], o["value_text"], o["value_num"]) for o in result["observations"]),
+                         [("客流", "老客多", None), ("生意", "还可以", None)])
+        self.assertEqual(len(result["thoughts"]), 1)
+        inside = self.ingest("记个想法：生意还可以，老客多")
+        self.assertEqual(inside["observations"], [])
+        self.assertEqual(inside["parsed"]["leftovers"], [])
+        self.assertIn("生意还可以", inside["thoughts"][0]["body"])
         raw = "营业额客流10人1300元。记个想法：试新品"
         result = self.ingest(raw)
         self.assertEqual(result["parsed"]["entries"][0]["note"], "营业额客流10人1300元")
@@ -235,8 +251,29 @@ class NativeThoughtTests(unittest.TestCase):
         self.assertEqual(result["status"], "partial")
         self.assertIn("预算300元", result["parsed"]["leftovers"])
 
+    def test_prd_qualitative_flow_is_observed_without_inventing_revenue(self):
+        raw = ("今天天气很好，生意还可以，老顾客非常的多，大概做了 1300。"
+               "明天我想做一个新品，然后打算用南瓜来做一个甜品。"
+               "南瓜甜品可以搭配木薯、银耳、枸杞等。")
+        result = self.ingest(raw)
+        self.assertEqual(result["entry_ids"], [])
+        self.assertEqual(result["sale_ids"], [])
+        qualitative = {(o["kind"], o["measure"], o["value_text"], o["value_num"], o["source_span"])
+                       for o in result["observations"]}
+        self.assertIn(("生意", "好坏", "还可以", None, "生意还可以"), qualitative)
+        self.assertIn(("客流", "情况", "老客多", None, "老顾客非常的多"), qualitative)
+        self.assertTrue(result["thoughts"])
+        self.assertIn("明天我想做一个新品", result["thoughts"][0]["body"])
+        self.assertEqual(result["thoughts"][0]["date"], DAY)
+        leftovers = result["parsed"]["leftovers"]
+        self.assertTrue(any("1300" in item for item in leftovers))
+        self.assertTrue(any("天气很好" in item for item in leftovers))
+        self.assertFalse(any("生意还可以" in item or "老顾客" in item for item in leftovers))
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(self.store.summary("s", "0000", "9999")["revenue"], 0)
+
     def test_unsupported_note_or_ambiguous_prefix_stays_leftover(self):
-        for raw in ("生意还可以", "如果明天想试南瓜甜品预算300元", "我想试南瓜甜品12元",
+        for raw in ("如果明天想试南瓜甜品预算300元", "我想试南瓜甜品12元",
                     "可以搭配木薯300元", "记个想法", "记个想法：", "记个随想：#新品",
                     "记个想法预算300元", "我说记个想法：卖12元", "记个想法：下周预算300元 # "):
             with self.subTest(raw=raw):

@@ -256,6 +256,51 @@ class StructuredCaptureTests(unittest.TestCase):
         self.assertEqual(result["capture"]["occurred_at"], "2026-10-25")
         self.assertEqual(len(result["observations"]), 7)
 
+    def test_qualitative_observations_reject_invented_numbers_and_keep_summary(self):
+        text = ("今天天气很好，生意还可以，老顾客非常的多，大概做了 1300。"
+                "明天我想做一个新品，然后打算用南瓜来做一个甜品。"
+                "南瓜甜品可以搭配木薯、银耳、枸杞等。")
+        thought = "明天我想做一个新品，然后打算用南瓜来做一个甜品"
+        data = {
+            "entries": [], "sales": [],
+            "observations": [
+                {"date": "2026-10-26", "kind": "生意", "measure": "好坏", "value_text": "还可以",
+                 "assertion": "actual", "source_quote": "生意还可以"},
+                {"date": "2026-10-26", "kind": "客流", "measure": "情况", "value_text": "老客多",
+                 "assertion": "actual", "source_quote": "老顾客非常的多"},
+            ],
+            "thoughts": [{"date": "2026-10-26", "title": "南瓜甜品新品",
+                          "body": "打算用南瓜做甜品，可搭配木薯、银耳、枸杞。",
+                          "tags": ["南瓜", "新品", "甜品"], "source_quote": thought}],
+            "leftovers": ["今天天气很好", "大概做了 1300", "南瓜甜品可以搭配木薯、银耳、枸杞等。"],
+        }
+        result = self.capture(data, text=text, request_id="qualitative")
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["entries"], [])
+        self.assertEqual([(o["kind"], o["measure"], o["value_text"], o["value_num"])
+                          for o in result["observations"]],
+                         [("生意", "好坏", "还可以", None), ("客流", "情况", "老客多", None)])
+        self.assertEqual(result["parsed"]["leftovers"], data["leftovers"])
+        self.assertFalse(any(item in result["parsed"]["leftovers"] for item in ("生意还可以", "老顾客非常的多")))
+        self.assertEqual(result["coverage"], {
+            "business_points_saved": True, "has_unstructured_fragments": True})
+        self.assertEqual([row["tags"] for row in result["thoughts"]], [["南瓜", "新品", "甜品"]])
+        self.assertEqual(self.service.summary(PRINCIPAL, "shop", "2026-10")["revenue"], 0)
+        guesses = [
+            {"kind": "客流", "measure": "情况", "value_num": 30, "unit": "人", "source_quote": "老顾客非常的多"},
+            {"kind": "生意", "measure": "好坏", "value_num": 1300, "unit": "元", "source_quote": "生意还可以"},
+            {"kind": "客流", "measure": "情况", "value_text": "非常多", "source_quote": "老顾客非常的多"},
+            {"kind": "生意", "measure": "好坏", "value_text": "还可以", "value_num": 1, "source_quote": "生意还可以"},
+            {"kind": "天气", "measure": "天气", "value_text": "很好", "source_quote": "天气很好"},
+        ]
+        for guess in guesses:
+            bad = {"entries": [], "sales": [], "observations": [
+                {"date": "2026-10-26", "assertion": "actual", **guess}], "thoughts": [], "leftovers": []}
+            with self.subTest(guess=guess), self.assertRaises(AgentError) as caught:
+                self.capture(bad, text=text, request_id="guess")
+            self.assertEqual(caught.exception.code, "invalid_structured")
+        self.assertEqual(self.service.summary(PRINCIPAL, "shop", "2026-10")["revenue"], 0)
+
     def test_leftovers_only_are_partial_and_use_received_date(self):
         data = {"entries": [], "sales": [], "observations": [], "leftovers": ["阴天"]}
         result = self.capture(data, text="2099-12-31？阴天")

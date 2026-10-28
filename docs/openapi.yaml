@@ -538,6 +538,9 @@ components:
         新执行回执必有顶层 thoughts；structured 模式必有 normalization.thoughts。
         为兼容历史完整缓存，schema 不将这两个新增字段设为所有响应必填；历史缓存原样重放。
         只有随想不等于财务入账；有未解析片段为 partial，无未解析片段且有投影为 parsed。
+        新执行回执含 coverage：business_points_saved 表示账目、销量、观测或随想已记下；
+        has_unstructured_fragments 表示 parsed.leftovers 仍有未结构化原话。
+        两者同时为真时 partial 不是整单失败。历史缓存可能没有 coverage。
         原话、所有投影/标签、请求认领和完整响应同事务提交或回滚。
       properties:
         duplicate: {type: boolean}
@@ -555,6 +558,16 @@ components:
             - {$ref: '#/components/schemas/AgentStructuredCapture'}
           description: 经校验的结构化结果，新执行结果含 thoughts；解析版本 agent-structured-2；历史缓存可能缺省
         warnings: {type: array, items: {type: string}}
+        coverage:
+          type: object
+          description: >-
+            New receipts only. business_points_saved is true when entries, sales,
+            observations, or thoughts were stored. has_unstructured_fragments mirrors
+            whether parsed.leftovers is non-empty. Qualitative observations do not
+            add money. Historical cached receipts may omit this object.
+          properties:
+            business_points_saved: {type: boolean}
+            has_unstructured_fragments: {type: boolean}
         provenance: {type: object}
     CaptureDetail:
       type: object
@@ -660,14 +673,18 @@ components:
       additionalProperties: false
       required: [date, kind, measure, source_quote, assertion]
       description: >-
-        Only existing nonfinancial observations: 客流人数/桌数; 订单单量;
-        天气天气; 排班出勤; 评价评分/差评数. Exactly one non-null value_num or
-        value_text; numeric facts use the corresponding count/rating unit.
-        Financial amounts and sales must use entries/sales, never observations.
+        Nonfinancial observations only. Numeric: 客流人数/人, 客流桌数/桌, 订单单量/单,
+        评价评分/分, 评价差评数/个. Qualitative text, with no value_num and no unit:
+        客流情况 is 老客多/人多/客人少/客流一般; 生意好坏 is 还可以/不错/一般/不好.
+        Do not invent a headcount, ratio, amount, or score for those labels.
+        天气天气 is 阴/晴/雨/多云/雪; do not map 天气很好 to 晴.
+        排班出勤 is 请假/请了假/缺勤/迟到/早退/休息/上班/到岗.
+        Exactly one of value_num or value_text. Financial amounts and sales must
+        use entries/sales, never observations.
       properties:
         date: {type: string, format: date}
-        kind: {type: string, enum: [客流, 订单, 天气, 排班, 评价]}
-        measure: {type: string, enum: [人数, 桌数, 单量, 天气, 出勤, 评分, 差评数]}
+        kind: {type: string, enum: [客流, 订单, 天气, 排班, 评价, 生意]}
+        measure: {type: string, enum: [人数, 桌数, 情况, 单量, 天气, 出勤, 评分, 差评数, 好坏]}
         value_num: {type: number, minimum: 0, maximum: 1000000000000}
         value_text: {type: string, minLength: 1, maxLength: 100}
         unit: {type: string, maxLength: 100}

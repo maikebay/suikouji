@@ -14,6 +14,7 @@ import urllib.error
 from contextlib import nullcontext
 
 from engine.agent_service import AgentError, AgentService, Principal
+from engine.observe import fragment_notice
 from engine.store import SqliteStore
 from .ilink import (ILinkError, ILinkClient, StateStore, StateStoreError,
                     ITEM_TEXT, MSG_STATE_FINISH, MSG_TYPE_USER)
@@ -168,8 +169,9 @@ class ILinkBotWorker:
             parts.append(f"已保存 {len(thoughts)} 条随想" + (f"（记录日：{date_label}）" if date_label else "") + "。")
         if not saved and not thoughts and not receipt.get("duplicate"):
             parts.append("原话已保存，暂未识别出可单独记录的账目或随想。")
+        saved_points = bool(entries or sales or observations or thoughts)
         if leftovers:
-            parts.append("以下片段尚待核对，涉及的金额未入账：" + "；".join(f"“{text}”" for text in leftovers) + "。")
+            parts.append(fragment_notice(leftovers, business_points_saved=saved_points))
         elif status == "partial":
             parts.append("还有部分内容待核对，未处理部分涉及的金额未入账。")
         if leftovers or status == "unparsed":

@@ -23,7 +23,7 @@ from .custom_fields import CustomFieldError, CustomFieldStore
 from .capabilities import product_capabilities
 from .importer import commit_import, plan_import
 from .model import month_range
-from .observe import ingest
+from .observe import capture_coverage, ingest
 from .review import apply_review, review_items
 
 
@@ -496,6 +496,10 @@ class AgentService:
                 result["normalization"] = receipt["normalization"]
                 if receipt.get("custom_fields", {}).get("written") or receipt.get("custom_fields", {}).get("missing_required"):
                     result["custom_fields"] = receipt["custom_fields"]
+            parsed = result.get("parsed") or {}
+            result["coverage"] = capture_coverage(
+                result["entries"], result["sales"], result["observations"], result["thoughts"],
+                parsed.get("leftovers"))
             self._finish(claim, result)
             return result
 
