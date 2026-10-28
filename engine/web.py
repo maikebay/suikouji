@@ -28,9 +28,63 @@ from .capabilities import product_capabilities
 from .review import apply_review, corrections_map, review_items
 from .store import SCHEMA_VERSION, SqliteStore, database_schema_ready
 
+def _multipart_name(disposition, key):
+    marker = key + '="'
+    start = disposition.find(marker)
+    if start < 0:
+        return None
+    value = disposition[start + len(marker):]
+    end = value.find('"')
+    return value[:end] if end >= 0 else None
+
+
+def _form_integer(value, code, message):
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise AgentError(code, message) from exc
+    if str(number) != str(value).strip():
+        raise AgentError(code, message)
+    return number
+
+
+def _multipart_parts(raw, boundary):
+    """按 CRLF 分隔分段。只去掉分帧换行，保留文件末尾原有字节。"""
+    marker = b"\r\n--" + boundary.encode("latin-1", "strict")
+    if not raw.startswith(b"--" + boundary.encode("latin-1", "strict")):
+        raise AgentError("invalid_multipart", "上传分段不完整")
+    raw = b"\r\n" + raw
+    fields, file_name, file_bytes, metadata = {}, None, None, 0
+    for chunk in raw.split(marker)[1:]:
+        if chunk.startswith(b"--"):
+            continue
+        if chunk.startswith(b"\r\n"):
+            chunk = chunk[2:]
+        header_blob, separator, body = chunk.partition(b"\r\n\r\n")
+        if not separator:
+            raise AgentError("invalid_multipart", "上传分段不完整")
+        if body.endswith(b"\r\n"):
+            body = body[:-2]
+        disposition = header_blob.decode("latin-1", "replace")
+        name = _multipart_name(disposition, "name")
+        filename = _multipart_name(disposition, "filename")
+        if filename is not None:
+            if name != "file" or file_bytes is not None:
+                raise AgentError("invalid_multipart", "只能上传一个名为 file 的 XLSX")
+            file_name, file_bytes = filename, body
+        else:
+            metadata += len(body)
+            if metadata > MAX_XLSX_FORM:
+                raise AgentError("body_too_large", "上传表单超过 64KiB", status=413)
+            fields[name] = body.decode("utf-8")
+    return fields, file_name, file_bytes
+
+
 ROOT = Path(__file__).resolve().parent.parent
 SHOP = "web-demo"
 MAX_BODY = 32768
+MAX_XLSX_BODY = 10 * 1024 * 1024
+MAX_XLSX_FORM = 64 * 1024
 
 
 def state(store, month=None):
@@ -72,16 +126,25 @@ class DemoHandler(BaseHTTPRequestHandler):
     def _principal(self):
         """Authenticate v1 with a configured bearer token; never trust query owner."""
         expected = getattr(self.server, "api_key", "")
+        manager_key = getattr(self.server, "manager_key", "")
         if not expected:
             raise AgentError("not_configured", "v1 API 尚未配置认证密钥", status=503)
         header = self.headers.get("Authorization", "")
         scheme, separator, token = header.partition(" ")
-        if (scheme.lower() != "bearer" or not separator or not token.isascii()
-                or not expected.isascii() or not hmac.compare_digest(token, expected)):
+        role = None
+        for candidate, candidate_role in ((expected, "agent"), (manager_key, "manager")):
+            if (candidate and scheme.lower() == "bearer" and separator and token.isascii()
+                    and candidate.isascii() and hmac.compare_digest(token, candidate)):
+                role = candidate_role
+                break
+        if role is None:
             raise AgentError("unauthorized", "需要有效的 Bearer 认证", status=401)
-        principal_id = getattr(self.server, "principal_id", "agent")
+        if role == "manager":
+            principal_id = getattr(self.server, "manager_principal_id", "manager")
+        else:
+            principal_id = getattr(self.server, "principal_id", "agent")
         owner_id = getattr(self.server, "owner_id", "local")
-        return Principal(str(principal_id), str(owner_id))
+        return Principal(str(principal_id), str(owner_id), role)
 
     def _v1_store(self):
         return SqliteStore(str(self.server.db_path), migrate=False)
@@ -134,6 +197,44 @@ class DemoHandler(BaseHTTPRequestHandler):
             raise AgentError("invalid_json", "JSON 请求必须是对象")
         return payload
 
+    def _limited_body(self, limit):
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise AgentError("invalid_content_length", "请求长度不正确") from exc
+        if not 0 < size <= limit:
+            raise AgentError("body_too_large", "请求体超过限制", status=413)
+        return self.rfile.read(size)
+
+    def _xlsx_preview(self, service, principal):
+        """只给 XLSX 上传单独放宽体积；其他 JSON 接口仍是 32KiB。"""
+        content_type = self.headers.get_content_type()
+        if content_type != "multipart/form-data":
+            raise AgentError("unsupported_media_type", "XLSX 需要 multipart/form-data", status=415)
+        boundary = None
+        for part in (self.headers.get("Content-Type") or "").split(";"):
+            name, separator, value = part.strip().partition("=")
+            if name == "boundary" and separator:
+                boundary = value.strip('"')
+        if not boundary or len(boundary.encode("utf-8")) > 70:
+            raise AgentError("invalid_multipart", "上传分隔符不正确")
+        raw = self._limited_body(MAX_XLSX_BODY + MAX_XLSX_FORM)
+        fields, file_name, file_bytes = _multipart_parts(raw, boundary)
+        if file_bytes is None or len(file_bytes) > MAX_XLSX_BODY:
+            raise AgentError("file_too_large", "XLSX 不能超过 10MiB", status=413)
+        workspace = fields.get("workspace_id")
+        if not workspace:
+            raise AgentError("workspace_required", "必须指定 workspace_id")
+        workspace = self._check_workspace(workspace)
+        sheet = _form_integer(fields.get("sheet_index", "0"), "invalid_sheet", "工作表序号不正确")
+        header = _form_integer(fields.get("header_row", "0"), "invalid_header", "表头行不正确")
+        direction = fields.get("direction")
+        excluded = fields.get("excluded_rows")
+        return self._send(200, service.preview_xlsx(
+            principal, workspace, file_bytes, filename=file_name or "import.xlsx",
+            sheet_index=sheet, header_row=header, direction=direction,
+            excluded_rows=json.loads(excluded) if excluded else None))
+
     def _v1_query(self):
         return {key: values[0] for key, values in parse_qs(urlsplit(self.path).query).items()}
 
@@ -157,6 +258,8 @@ class DemoHandler(BaseHTTPRequestHandler):
         if not workspace:
             raise AgentError("workspace_required", "必须指定 workspace_id")
         workspace = self._check_workspace(workspace)
+        if path == "/v1/custom-fields":
+            return self._send(200, service.list_custom_fields(principal, workspace))
         if path == "/v1/thoughts":
             params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
             allowed = {"workspace_id", "start", "end", "tag", "q", "page_size", "before"}
@@ -196,6 +299,8 @@ class DemoHandler(BaseHTTPRequestHandler):
         raise AgentError("not_found", "没有这个 v1 接口", status=404)
 
     def _v1_post(self, path, service, principal):
+        if path == "/v1/imports/xlsx-preview":
+            return self._xlsx_preview(service, principal)
         payload = self._v1_json()
         workspace = payload.get("workspace_id")
         if path == "/v1/captures":
@@ -208,23 +313,54 @@ class DemoHandler(BaseHTTPRequestHandler):
                                           source=payload.get("source", "agent"), received_at=payload.get("received_at"),
                                           context=payload.get("context"), intent=payload.get("intent"),
                                           profile_id=payload.get("profile_id"),
-                                          **({"structured": payload["structured"]} if "structured" in payload else {}))
+                                          **({"structured": payload["structured"]} if "structured" in payload else {}),
+                                          **({"custom_fields_version": payload["custom_fields_version"]}
+                                             if "custom_fields_version" in payload else {}))
             return self._send(200, result)
         if not workspace:
             raise AgentError("workspace_required", "必须指定 workspace_id")
         workspace = self._check_workspace(workspace)
+        if path == "/v1/custom-field-maintenance":
+            return self._send(200, service.maintain_custom_fields(
+                principal, workspace, payload.get("request_id"), payload.get("action"),
+                payload.get("change")))
+        if path == "/v1/custom-field-suggestions":
+            return self._send(200, service.submit_custom_field_suggestion(
+                principal, workspace, payload.get("request_id"), payload.get("suggestion")))
+        if path == "/v1/custom-field-changes/preview":
+            return self._send(200, service.preview_custom_field_change(
+                principal, workspace, payload.get("change")))
+        if path == "/v1/custom-field-records/query":
+            return self._send(200, service.query_custom_field_records(principal, workspace, payload))
+        if path == "/v1/custom-field-records/group":
+            return self._send(200, service.group_custom_field_records(principal, workspace, payload))
+        if path == "/v1/custom-field-records/export":
+            return self._send(200, service.export_custom_field_records(principal, workspace, payload))
+        if path == "/v1/custom-field-changes/commit":
+            return self._send(200, service.commit_custom_field_change(
+                principal, workspace, payload.get("request_id"), payload.get("preview_token")))
+        if path == "/v1/custom-field-values/backfill":
+            return self._send(200, service.backfill_custom_field_values(
+                principal, workspace, payload.get("request_id"), payload.get("revision")))
         if path == "/v1/reviews":
             review = service.review(principal, workspace, payload.get("request_id"),
                                     payload.get("target_id"), payload.get("fields"), payload.get("reason"))
             return self._send(200, {"review": review, "duplicate": review["duplicate"]})
         if path == "/v1/imports/preview":
             return self._send(200, service.preview_import(principal, workspace, payload.get("csv")))
+        if path == "/v1/imports/xlsx-commit":
+            return self._send(200, service.commit_xlsx(
+                principal, workspace, payload.get("request_id"),
+                confirmed=payload.get("confirmed", False),
+                filename=payload.get("filename", "import.xlsx"),
+                preview_token=payload.get("preview_token")))
         if path == "/v1/imports/commit":
             return self._send(200, service.commit_import(
                 principal, workspace, payload.get("csv"), payload.get("request_id"),
                 confirmed=payload.get("confirmed", False),
                 filename=payload.get("filename", "agent.csv"),
                 preview_token=payload.get("preview_token"),
+                source_sha256=payload.get("source_sha256"),
             ))
         raise AgentError("not_found", "没有这个 v1 接口", status=404)
 
@@ -234,8 +370,17 @@ class DemoHandler(BaseHTTPRequestHandler):
             "/v1/captures": "POST", "/v1/timeline": "GET",
             "/v1/summary": "GET", "/v1/entries": "GET",
             "/v1/sales": "GET", "/v1/observations": "GET", "/v1/thoughts": "GET",
+            "/v1/custom-fields": "GET", "/v1/custom-field-maintenance": "POST",
+            "/v1/custom-field-suggestions": "POST",
+            "/v1/custom-field-changes/preview": "POST",
+            "/v1/custom-field-changes/commit": "POST",
+            "/v1/custom-field-records/query": "POST",
+            "/v1/custom-field-records/group": "POST",
+            "/v1/custom-field-records/export": "POST",
+            "/v1/custom-field-values/backfill": "POST",
             "/v1/reviews": "GET, POST",
-            "/v1/imports/preview": "POST", "/v1/imports/commit": "POST",
+            "/v1/imports/preview": "POST", "/v1/imports/xlsx-preview": "POST",
+            "/v1/imports/xlsx-commit": "POST", "/v1/imports/commit": "POST",
         }.get(path)
         if allow is None and re.fullmatch(r"/v1/captures/[^/]+", path):
             allow = "GET"
@@ -519,7 +664,8 @@ class DemoHandler(BaseHTTPRequestHandler):
 
 
 def make_server(port=8765, db_path=None, *, api_key=None, owner_id="local",
-                principal_id="agent", bind="127.0.0.1", workspace_id="", api_only=False):
+                principal_id="agent", bind="127.0.0.1", workspace_id="", api_only=False,
+                manager_key=None, manager_principal_id="manager"):
     if bind not in ("127.0.0.1", "localhost", "::1") and len(api_key or "") < 16:
         raise ValueError("非回环监听的 API key 至少需要 16 个字符")
     path = Path(db_path) if db_path else ROOT / "data" / "web-demo.db"
@@ -538,6 +684,8 @@ def make_server(port=8765, db_path=None, *, api_key=None, owner_id="local",
     server = HTTPServer((bind, port), DemoHandler)
     server.db_path = path
     server.api_key = api_key or ""
+    server.manager_key = manager_key or ""
+    server.manager_principal_id = manager_principal_id
     server.owner_id = owner_id
     server.principal_id = principal_id
     server.workspace_id = workspace_id

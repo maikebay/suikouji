@@ -45,11 +45,12 @@ class AgentHttpContractTests(unittest.TestCase):
             server_port=8765,
         )
 
-    def request(self, method, path, payload=None, *, authorization="Bearer fake-contract-token", raw_body=None):
+    def request(self, method, path, payload=None, *, authorization="Bearer fake-contract-token", raw_body=None,
+                content_type="application/json"):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else b""
         if raw_body is not None:
             body = raw_body
-        headers = ["Host: 127.0.0.1:8765", "Content-Type: application/json",
+        headers = ["Host: 127.0.0.1:8765", f"Content-Type: {content_type}",
                    f"Content-Length: {len(body)}"]
         if authorization is not None:
             headers.append(f"Authorization: {authorization}")

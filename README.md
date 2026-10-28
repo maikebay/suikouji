@@ -61,6 +61,7 @@ JSON export包含随想与标签，但不是完整数据库备份，也不承诺
 - [补充、修正与待核对](docs/review-and-correction.md)
 - [连续口语解析边界](docs/parser-boundaries.md)
 - [生意随想首版验收记录](docs/thoughts-release-verification.md)
+- [自定义字段](suikouji-custom-fields-prd.md)：已授权 Agent 直接维护字段、别名、导入列映射和历史属性补填，不提供字段确认管理界面。XLSX 使用独立认证上传预览和提交，文件最多 10MiB，公式只保留缓存值。
 - [维护经验与失败证据](docs/engineering/lessons.md)
 - [微信协议参考](docs/ilink-protocol-notes.md)
 

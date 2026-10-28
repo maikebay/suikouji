@@ -97,7 +97,7 @@ class ThoughtStoreTests(unittest.TestCase):
 
     def test_interface_new_schema_public_rows_and_tag_order(self):
         self.assertTrue({'thought_add', 'thought_for_record', 'thought_list'} <= Store.__abstractmethods__)
-        self.assertEqual(SCHEMA_VERSION, 6)
+        self.assertEqual(SCHEMA_VERSION, 7)
         self.assertTrue(database_schema_ready(self.store.conn))
         self.assertEqual(self.store.conn.execute('PRAGMA foreign_keys').fetchone()[0], 1)
         first = self.add(tags=['南瓜', '新品', 'New', 'new'])
@@ -234,7 +234,7 @@ class ThoughtStoreTests(unittest.TestCase):
     def test_export_and_sqlite_backup_restore_include_ordered_tags(self):
         self.add(tags=['第二', '第一'])
         expected = self.store.export_all('a')
-        self.assertEqual(expected['schema_version'], 6)
+        self.assertEqual(expected['schema_version'], 7)
         self.assertEqual(expected['tables']['thoughts'][0]['shop_id'], 'a')
         self.assertEqual([row['position'] for row in expected['tables']['thought_tags']], [0, 1])
         self.assertEqual(self.store.export_all('b')['tables']['thoughts'], [])
@@ -280,7 +280,7 @@ class ThoughtMigrationTests(unittest.TestCase):
     def test_migration_preserves_every_legacy_row_and_source_bytes(self):
         before = self.snapshot(self.source)
         result = deployment.migrate_database(str(self.source), str(self.destination))
-        self.assertEqual((result['status'], result['source_schema_version'], result['schema_version']), ('migrated', 5, 6))
+        self.assertEqual((result['status'], result['source_schema_version'], result['schema_version']), ('migrated', 5, 7))
         self.assertEqual(self.source.read_bytes(), self.original)
         after = self.snapshot(self.destination)
         self.assertEqual({key: after[key] for key in before}, before)

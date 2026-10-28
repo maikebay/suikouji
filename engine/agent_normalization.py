@@ -6,10 +6,12 @@ module deliberately does not attempt to infer facts from arbitrary narrative.
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import math
 import re
 
+from .custom_fields import CustomFieldError, CustomFieldStore
 from .observe import RECORD_TYPES, dedup_keys, normalize
 from .thoughts import validate_thought
 
@@ -23,11 +25,11 @@ SECTIONS = {"entries", "sales", "observations", "leftovers"}
 COMMON = {"date", "source_quote", "assertion"}
 FINANCIAL = {"amount_basis", "granularity"}
 ENTRY_REQUIRED = COMMON | FINANCIAL | {"type", "category", "amount"}
-ENTRY_OPTIONAL = {"item", "qty", "unit", "period_month", "platform", "channel"}
+ENTRY_OPTIONAL = {"item", "qty", "unit", "period_month", "platform", "channel", "custom_fields"}
 SALE_REQUIRED = COMMON | FINANCIAL | {"product_name", "qty", "amount", "unit"}
-SALE_OPTIONAL = {"platform", "channel", "product_category"}
+SALE_OPTIONAL = {"platform", "channel", "product_category", "custom_fields"}
 OBS_REQUIRED = COMMON | {"kind", "measure"}
-OBS_OPTIONAL = {"value_num", "value_text", "unit", "subject"}
+OBS_OPTIONAL = {"value_num", "value_text", "unit", "subject", "custom_fields"}
 EXPENSE_CATEGORIES = {"房租", "人工", "水电", "平台佣金", "包装耗材", "推广", "维修", "税费", "其他支出"}
 WEATHER = {"阴", "晴", "雨", "多云", "雪"}
 ATTENDANCE = {"请假", "请了假", "缺勤", "迟到", "早退", "休息", "上班", "到岗"}
@@ -96,8 +98,26 @@ def _optional_text(row, fields, label):
             _text(row[field], f"{label}.{field}")
 
 
+def _custom_fields(row, label):
+    values = row.get("custom_fields", [])
+    if not isinstance(values, list) or len(values) > 20:
+        raise ValueError(f"{label}.custom_fields 必须是最多 20 项的数组")
+    for index, item in enumerate(values):
+        if not isinstance(item, dict) or set(item) - {"field_id", "value", "source_quote"}:
+            raise ValueError(f"{label}.custom_fields[{index}] 含有未允许的字段")
+        if not isinstance(item.get("field_id"), str) or not item["field_id"]:
+            raise ValueError(f"{label}.custom_fields[{index}].field_id 不正确")
+        if "source_quote" in item:
+            _quote(item["source_quote"], row.get("_raw_text", ""), f"{label}.custom_fields[{index}].source_quote")
+
+
+def _without_custom(row):
+    return {key: value for key, value in row.items() if key != "custom_fields"}
+
+
 def _entry(row, raw_text, label):
     _fields(row, ENTRY_REQUIRED, ENTRY_OPTIONAL, label)
+    _custom_fields({**row, "_raw_text": raw_text}, label)
     _common(row, raw_text, label)
     _financial(row, label)
     _choice(row["type"], {"revenue", "purchase", "expense"}, f"{label}.type")
@@ -120,11 +140,12 @@ def _entry(row, raw_text, label):
         if not isinstance(period, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}", period):
             raise ValueError(f"{label}.period_month 必须是 YYYY-MM")
         _date(period + "-01", f"{label}.period_month")
-    return dict(row)
+    return copy.deepcopy(row)
 
 
 def _sale(row, raw_text, label):
     _fields(row, SALE_REQUIRED, SALE_OPTIONAL, label)
+    _custom_fields({**row, "_raw_text": raw_text}, label)
     _common(row, raw_text, label)
     _financial(row, label)
     _text(row["product_name"], f"{label}.product_name")
@@ -134,8 +155,8 @@ def _sale(row, raw_text, label):
     _number(row["qty"], f"{label}.qty")
     if row["amount"] is not None:
         _number(row["amount"], f"{label}.amount")
-    _optional_text(row, SALE_OPTIONAL, label)
-    return dict(row)
+    _optional_text(row, {"platform", "channel", "product_category"}, label)
+    return copy.deepcopy(row)
 
 
 def _observation_rule(row):
@@ -152,6 +173,7 @@ def _observation_rule(row):
 
 def _observation(row, raw_text, label):
     _fields(row, OBS_REQUIRED, OBS_OPTIONAL, label)
+    _custom_fields({**row, "_raw_text": raw_text}, label)
     _common(row, raw_text, label)
     rule = _observation_rule(row)
     if ("value_num" in row) == ("value_text" in row):
@@ -165,7 +187,7 @@ def _observation(row, raw_text, label):
     if "unit" in row and row["unit"] != rule.get("unit", ""):
         raise ValueError(f"{label}.unit 与 kind/measure 不匹配")
     _optional_text(row, {"subject"}, label)
-    return dict(row)
+    return copy.deepcopy(row)
 
 
 def validate_structured(raw_text, structured):
@@ -190,8 +212,25 @@ def validate_structured(raw_text, structured):
     }
 
 
+def _attach_custom_fields(store, shop_id, record_type, target_id, row, raw_text, config_version):
+    if "custom_fields" not in row and config_version is None:
+        return {"written": 0, "missing_required": []}
+    attributes = {
+        "entry_types": row.get("type"), "categories": row.get("category"),
+        "product_categories": row.get("product_category"), "kinds": row.get("kind"),
+    }
+    try:
+        return CustomFieldStore(store).write_values(
+            shop_id, record_type, target_id, row.get("custom_fields", []),
+            attributes=attributes, config_version=config_version,
+            source={"raw_text": raw_text, "mode": "capture"})
+    except CustomFieldError as exc:
+        raise ValueError(exc.args[0]) from exc
+
+
 def persist_structured(store, shop_id, raw_text, normalized, *, source="agent", peer=None,
-                       dedup_ref=None, received_at=None, context=None, intent=None, profile_id=None):
+                       dedup_ref=None, received_at=None, context=None, intent=None, profile_id=None,
+                       custom_fields_version=None):
     """Persist validated data via Store; the caller atomically finishes the receipt.
 
     New structured captures commit in one transaction, so a pre-existing raw
@@ -215,12 +254,19 @@ def persist_structured(store, shop_id, raw_text, normalized, *, source="agent", 
             raise ValueError("已存在的原话不能再次投影，请核对原请求的完整响应")
         entries = [{**row, "shop_id": shop_id, "note": row["source_quote"]} for row in normalized["entries"]]
         entry_ids = store.add_entries(entries, source=source, raw_text=raw_text, record_id=record["id"])
+        custom_results = []
+        for row, target_id in zip(normalized["entries"], entry_ids):
+            custom_results.append(_attach_custom_fields(
+                store, shop_id, "entry", target_id, row, raw_text, custom_fields_version))
         sales = []
         for row in normalized["sales"]:
             product = store.product_find(shop_id, row["product_name"])
             product = product or store.product_upsert(shop_id, row["product_name"])
             sales.append({**row, "product_id": product["id"], "raw_text": raw_text})
         sale_ids = store.add_sales(shop_id, sales, source=source, record_id=record["id"])
+        for row, target_id in zip(normalized["sales"], sale_ids):
+            custom_results.append(_attach_custom_fields(
+                store, shop_id, "sale", target_id, row, raw_text, custom_fields_version))
         observations = []
         for row in normalized["observations"]:
             observations.append({
@@ -232,7 +278,13 @@ def persist_structured(store, shop_id, raw_text, normalized, *, source="agent", 
             })
         rows = dedup_keys(normalize(store, shop_id, observations))
         observation_ids = store.observation_add(shop_id, rows)
+        for row, target_id in zip(normalized["observations"], observation_ids):
+            custom_results.append(_attach_custom_fields(
+                store, shop_id, "observation", target_id, row, raw_text, custom_fields_version))
         thought_ids = store.thought_add(shop_id, record["id"], normalized["thoughts"])
+        for row, target_id in zip(normalized["thoughts"], thought_ids):
+            custom_results.append(_attach_custom_fields(
+                store, shop_id, "thought", target_id, row, raw_text, custom_fields_version))
         status = "partial" if normalized["leftovers"] else "parsed"
         store.record_set_status(record["id"], status, PARSER_VERSION)
         parsed = {"intent": "record", "entries": normalized["entries"], "sales": normalized["sales"],
@@ -241,5 +293,9 @@ def persist_structured(store, shop_id, raw_text, normalized, *, source="agent", 
         return {"record": {**record, "parse_status": status}, "duplicate": False, "status": status,
                 "parsed": parsed, "entry_ids": entry_ids, "sale_ids": sale_ids,
                 "observations": rows, "observation_ids": observation_ids,
+                "custom_fields": {"written": sum(item["written"] for item in custom_results),
+                                  "missing_required": [item for result in custom_results
+                                                       for item in result["missing_required"]],
+                                  "custom_fields_version": custom_fields_version},
                 "thought_ids": thought_ids, "thoughts": store.thought_for_record(shop_id, record["id"]),
                 "normalization": normalized}

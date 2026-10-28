@@ -245,6 +245,43 @@ paths:
                       filename: {type: string}
                       rows: {type: integer, minimum: 0}
         default: {$ref: '#/components/responses/Error'}
+  /v1/imports/xlsx-preview:
+    post:
+      operationId: previewXlsx
+      description: |
+        Multipart upload for one .xlsx file. The file is at most 10MiB and non-file
+        form fields are at most 64KiB. Measured uncompressed content is at most 50MiB
+        across at most 1000 members. Macros, formulas, and external links are not executed.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [workspace_id, file]
+              properties:
+                workspace_id: {type: string, minLength: 1}
+                file: {type: string, format: binary}
+                sheet_index: {type: integer, minimum: 0, default: 0}
+                header_row: {type: integer, minimum: 0, default: 0}
+      responses:
+        '200': {description: Preview bound to the staged file and one visible worksheet}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/imports/xlsx-commit:
+    post:
+      operationId: commitXlsx
+      description: |
+        Confirm a previously previewed XLSX worksheet. The body contains no file bytes.
+        The preview token expires after 1800 seconds and is consumed by one request_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/XlsxCommitRequest'}
+      responses:
+        '200': {description: Original import result or cached replay}
+        '409': {description: confirmation_required, preview_mismatch, source_missing, config_version_conflict or idempotency_conflict}
+        default: {$ref: '#/components/responses/Error'}
   /v1/imports/commit:
     post:
       operationId: commitImport
@@ -688,3 +725,12 @@ components:
             confirmed: {type: boolean, enum: [true]}
             preview_token: {type: string, minLength: 1}
             filename: {type: string, minLength: 1, maxLength: 200}
+    XlsxCommitRequest:
+      type: object
+      required: [workspace_id, request_id, confirmed, preview_token]
+      properties:
+        workspace_id: {type: string, minLength: 1}
+        request_id: {type: string, minLength: 1, maxLength: 100}
+        confirmed: {type: boolean, enum: [true]}
+        preview_token: {type: string, minLength: 1}
+        filename: {type: string, minLength: 1, maxLength: 200}

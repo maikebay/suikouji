@@ -22,7 +22,7 @@ from .model import (
     parse_date,
     round2,
 )
-from .sheet import read_table, to_records
+from .sheet import read_csv, read_table, read_xlsx, to_records
 
 # 表头别名。顺序无所谓，命中即用；越靠前越优先。
 COLUMN_ALIASES = {
@@ -121,9 +121,20 @@ def _norm_date(text: str) -> str | None:
     return None
 
 
-def plan_import(path: str, header_row: int = 0) -> dict:
+def plan_import(path: str, header_row: int = 0, column_mappings=None, sheet_index: int = 0,
+                direction=None, excluded_rows=None) -> dict:
     """读表并给出导入方案（不入库）。"""
-    rows = read_table(path)
+    xlsx = str(path).lower().endswith(".xlsx") or sheet_index is not None and not str(path).lower().endswith((".csv", ".tsv", ".txt"))
+    flags = {}
+    sheet_id = None
+    if str(path).lower().endswith((".csv", ".tsv", ".txt")):
+        rows = read_csv(path)
+        xlsx = False
+    elif sheet_index is not None:
+        rows, sheet_id, flags = read_xlsx(path, sheet_index=sheet_index)
+        xlsx = True
+    else:
+        rows = read_table(path)
     if not rows:
         raise ValueError("表格是空的")
     records, headers = to_records(rows, header_row)
@@ -135,8 +146,25 @@ def plan_import(path: str, header_row: int = 0) -> dict:
     has_qty = any(any(_norm_header(k) == nh for k in _KIND_QTY) for nh in norm_headers)
 
     mapping = {k: _find_column(headers, k) for k in COLUMN_ALIASES}
+    if column_mappings:
+        # 已保存的列映射只覆盖调用方显式传入的这次预览，旧 CSV 请求保持原猜测。
+        by_header = {_norm_header(header): header for header in headers}
+        for item in column_mappings:
+            if item.get("kind") != "generic" or item.get("generic_field") not in mapping:
+                continue
+            header = by_header.get(_norm_header(item.get("source_header", "")))
+            if header:
+                mapping[item["generic_field"]] = header
 
-    if has_item and has_qty and not mapping['type']:
+    direction_required = False
+    if xlsx and has_item and has_qty and not mapping['type']:
+        # 商品和数量不能单独决定这是销售。提交时只能使用预览里已经选定的方向。
+        if direction not in ("purchase", "sale"):
+            direction_required = True
+            kind = "entries"
+        else:
+            kind = "sales" if direction == "sale" else "entries"
+    elif has_item and has_qty and not mapping['type']:
         kind = "sales"
     elif mapping["amount"]:
         kind = "entries"
@@ -145,6 +173,8 @@ def plan_import(path: str, header_row: int = 0) -> dict:
             "认不出这张表：既没有「商品+数量」的销售明细列，也没有可用的金额列。"
             f"实际表头：{headers}"
         )
+    currency_header = next((header for header in headers
+                            if _norm_header(header) in {"币种", "货币", "currency"}), None)
 
     parsed, skipped = [], []
     for i, rec in enumerate(records, start=header_row + 2):
@@ -180,20 +210,71 @@ def plan_import(path: str, header_row: int = 0) -> dict:
                 if not re.fullmatch(r'\d{4}-\d{2}', row['period_month']):
                     raise ValueError('费用归属月份格式为 YYYY-MM')
                 month_range(row['period_month'])
+            if currency_header:
+                currency = str(rec.get(currency_header, "") or "").strip()
+                if currency not in ("", "人民币", "CNY", "元"):
+                    raise ValueError("只接受人民币、CNY 或元")
+                row["currency"] = "CNY"
+            elif xlsx:
+                row["currency"] = "CNY"
             row['raw_text'] = json.dumps(rec, ensure_ascii=False)
+            row['custom_fields'] = _custom_columns(rec, headers, column_mappings)
+            if xlsx:
+                row["source"] = _source_coordinates(
+                    rec, headers, rows, header_row, i, flags)
             parsed.append(row)
         except ValueError as exc:
             skipped.append({'row': i, 'raw': rec, 'reason': str(exc)})
+    if xlsx and excluded_rows is not None:
+        allowed = {item["row"] for item in skipped}
+        if set(excluded_rows) != allowed:
+            raise ValueError("排除行必须与本次预览的未识别行一致")
+        skipped = []
 
     return {
         "kind": kind,
         "headers": headers,
         "mapping": mapping,
+        "sheet": sheet_id,
+        "header_row": header_row,
+        "direction_required": direction_required,
+        "direction": direction if direction_required or direction in ("purchase", "sale") else None,
+        "currency": "CNY" if xlsx else None,
         "rows": parsed,
         "skipped": skipped,
         "row_count": len(parsed),
         "source_rows": len(records),
     }
+
+
+def _source_coordinates(rec, headers, rows, header_row, row_number, flags):
+    source_row = rows[row_number - 1]
+    cells = []
+    for index, header in enumerate(headers):
+        cells.append({
+            "column": index + 1,
+            "header": str(rows[header_row][index]).strip() if index < len(rows[header_row]) else "",
+            "value": str(source_row[index]).strip() if index < len(source_row) else "",
+            "state": flags.get((row_number - 1, index), "value"),
+        })
+    return {"row": row_number, "cells": cells}
+
+
+def _custom_columns(rec, headers, column_mappings):
+    if not column_mappings:
+        return []
+    by_header = {_norm_header(header): header for header in headers}
+    values = []
+    for item in column_mappings:
+        if item.get("kind") != "custom" or not item.get("field_id"):
+            continue
+        header = by_header.get(_norm_header(item.get("source_header", "")))
+        if not header:
+            continue
+        text = str(rec.get(header, "") or "").strip()
+        if text:
+            values.append({"field_id": item["field_id"], "value": text})
+    return values
 
 
 def _parse_entry_row(rec: dict, mapping: dict) -> dict | None:
@@ -234,10 +315,16 @@ def _parse_sale_row(rec: dict, mapping: dict) -> dict | None:
 def commit_import(store, shop_id: str, plan: dict, filename: str, sha256: str) -> dict:
     """整批原子提交；日汇总按范围去重，交易按来源明细ID去重。冲突整批退回。"""
     with store.transaction():
-        dup = store.batch_find_by_hash(shop_id, sha256)
+        # 旧 CSV 没有工作表，批次身份仍是整份文件摘要。XLSX 使用工作簿关系里的
+        # 稳定工作表编号，只附加一次；表头和映射变化不能另开批次。
+        sheet_id = plan.get('sheet')
+        batch_identity = sha256 if sheet_id is None else sha256 + ':sheet:' + str(sheet_id)
+        legacy = sha256 + ':sheet:' + str(sheet_id) + ':sheet:' + str(sheet_id) if sheet_id is not None else None
+        dup = store.batch_find_by_hash(shop_id, batch_identity) or (
+            store.batch_find_by_hash(shop_id, legacy) if legacy else None)
         if dup:
             return {'duplicate': True, 'batch': dup, 'imported': 0}
-        batch = store.batch_add(shop_id, filename, sha256, plan['kind'], 0)
+        batch = store.batch_add(shop_id, filename, batch_identity, plan['kind'], 0)
         imported = duplicates = 0
         occurrences = Counter()
         for raw in plan['rows']:
@@ -246,7 +333,9 @@ def commit_import(store, shop_id: str, plan: dict, filename: str, sha256: str) -
                 canonical = store.product_find(shop_id, row['product_name'])
                 if canonical:
                     row['product_name'] = canonical['name']
-            content = {k: v for k, v in row.items() if k != 'raw_text'}
+            # 自定义属性不是财务身份：同一笔采购后来补上供应商，不能再生成一笔账。
+            content = {k: v for k, v in row.items()
+                       if k not in ('raw_text', 'custom_fields', 'source', 'currency')}
             digest = hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
             if row.get('external_id'):
                 identity = [plan['kind'], row.get('source_system', ''), row.get('platform', ''), row['external_id']]
@@ -268,6 +357,9 @@ def commit_import(store, shop_id: str, plan: dict, filename: str, sha256: str) -
                     raise ValueError('同一来源明细或日汇总数值发生变化，请核对原记录后导入')
                 duplicates += 1
                 continue
+            custom_fields = row.pop('custom_fields', [])
+            row.pop('source', None)
+            row.pop('currency', None)
             if plan['kind'] == 'sales':
                 for old in store.list_sales(shop_id, row['date'], row['date']):
                     if old['product_name'] != row['product_name']:
@@ -279,9 +371,23 @@ def commit_import(store, shop_id: str, plan: dict, filename: str, sha256: str) -
                         raise ValueError('销售范围与已有记录重叠，不能把日汇总和交易明细重复导入')
                 product = store.product_upsert(shop_id, row['product_name'], category=row.get('product_category') or None)
                 row['product_id'] = product['id']
-                store.add_sales(shop_id, [row], source=SOURCE_IMPORT, batch_id=batch['id'])
+                target_ids = store.add_sales(shop_id, [row], source=SOURCE_IMPORT, batch_id=batch['id'])
+                record_type = 'sale'
             else:
-                store.add_entries([{**row, 'shop_id': shop_id}], source=SOURCE_IMPORT, batch_id=batch['id'])
+                target_ids = store.add_entries([{**row, 'shop_id': shop_id}], source=SOURCE_IMPORT, batch_id=batch['id'])
+                record_type = 'entry'
+            if custom_fields:
+                from .custom_fields import CustomFieldStore
+                fields = CustomFieldStore(store)
+                resolved = []
+                for item in custom_fields:
+                    alias = fields.resolve_alias(shop_id, item['field_id'], item['value'])
+                    resolved.append({**item, 'value': item['value'] if alias is None else alias})
+                fields.write_values(
+                    shop_id, record_type, target_ids[0], resolved,
+                    attributes={'entry_types': row.get('type'), 'categories': row.get('category'),
+                                'product_categories': row.get('product_category')},
+                    config_version=None, source={'mode': 'import'})
             store.import_identity_add(shop_id, key, digest, batch['id'])
             imported += 1
         store.batch_set_rows(batch['id'], imported)

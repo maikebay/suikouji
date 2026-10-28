@@ -92,7 +92,17 @@ _CAPABILITIES = (
         "预览并导入销售或费用 CSV，保留来源批次和去重身份",
         "CSV text + mapping",
         "提交前必须展示预览和重复/冲突结果",
-        ("当前没有客如云、美团或饿了么直连连接器",),
+        ("JSON 请求上限 32768 字节；CSV 服务层上限 2MiB，不能用 XLSX 的 10MiB 上传上限",),
+    ),
+    Capability(
+        "import.xlsx",
+        "available",
+        "预览并确认提交一个 XLSX 工作表，保留上传原件和稳定工作表身份",
+        "multipart file + worksheet + header row",
+        "提交前必须展示预览；商品加数量但没有类型列时必须选择采购或销售",
+        ("文件最多 10MiB，表单元数据最多 64KiB，实测解压最多 50MiB、1000 个成员",
+         "不执行宏、公式或外链；公式只保留缓存值并标为未核对",
+         "不接受 xlsm、VBA、外链、嵌入对象、加密包或旧版 xls"),
     ),
     Capability(
         "cost.standard",
@@ -133,6 +143,17 @@ _CAPABILITIES = (
         "personal WeChat account",
         "不能承诺或静默替代",
         ("当前 iLink 代码面向 Bot 身份，不是普通个人微信",),
+    ),
+    Capability(
+        "custom_fields.maintenance",
+        "available",
+        "已授权 Agent 识别新记录中的新业务属性后，直接创建和维护该工作空间的自定义字段",
+        "workspace_id + request_id + action(create/update/add_option/set_option_enabled/alias/import_mapping) + change",
+        "不需要用户确认；字段定义、别名和导入列映射由已授权 Agent 直接生效",
+        ("金额修正和 CSV 导入提交仍按原确认规则",
+         "历史属性补填由已授权 Agent 直接执行，只改自定义属性，不改金额",
+         "字段只记录业务属性，不改变营业额、采购、费用或利润口径",
+         "不提供字段确认管理界面"),
     ),
 )
 
@@ -273,6 +294,14 @@ def product_capabilities() -> dict:
                 "separate_actual_from_forecast_and_opinion": True,
                 "require_source_quote": True,
                 "ask_only_when_information_missing_or_conflicting": True,
+                "custom_field_policy": {
+                    "recognized_new_attribute": "create_field_directly",
+                    "user_confirmation": False,
+                    "operation": "maintain_custom_fields",
+                    "guidance": "新业务记录出现现有字段没有的属性时，Agent 读取当前字段后直接创建或补充字段，"
+                                "再把值写入对应记录。别名、导入列映射和历史属性补填也由已授权 Agent 直接维护，"
+                                "不交回用户确认，也不提供字段确认管理界面。金额修正和 CSV 导入提交仍按原规则确认。",
+                },
                 "request_example_context": "示例已确定餐饮工作空间、日营业总额与gross流水口径；时区为Asia/Shanghai。",
                 "thought_date_policy": {
                     "default": "first_received_date_in_workspace_timezone",
