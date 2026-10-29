@@ -29,8 +29,8 @@ from .model import (
     round2,
 )
 
-SCHEMA_VERSION = 7
-HISTORICAL_SCHEMA_VERSIONS = (5, 6)
+SCHEMA_VERSION = 8
+HISTORICAL_SCHEMA_VERSIONS = (5, 6, 7)
 
 # Execute these statements inside the caller's transaction: executescript would
 # commit it before applying DDL, breaking copy migration and rollback guarantees.
@@ -66,6 +66,39 @@ _THOUGHT_SCHEMA = (
     """CREATE INDEX IF NOT EXISTS idx_thought_tags_lookup
        ON thought_tags(shop_id, tag, thought_id)""",
 )
+
+
+
+_VOID_ENTRY_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS entry_void_audit (
+        id TEXT PRIMARY KEY NOT NULL,
+        shop_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        reason TEXT,
+        before_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(shop_id) REFERENCES shop(id),
+        FOREIGN KEY(shop_id, entry_id) REFERENCES entry(shop_id, id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_entry_void_audit
+       ON entry_void_audit(shop_id, entry_id, created_at DESC, id DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_entry_active
+       ON entry(shop_id, date, created_at) WHERE voided_at IS NULL""",
+)
+
+
+def _apply_void_entry_columns(conn):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(entry)")}
+    for name, definition in (
+        ("voided_at", "TEXT"),
+        ("void_reason", "TEXT"),
+        ("voided_by", "TEXT"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE entry ADD COLUMN {name} {definition}")
+    for statement in _VOID_ENTRY_SCHEMA:
+        conn.execute(statement)
 
 
 def _create_thought_schema(conn):
@@ -539,7 +572,7 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
             "thoughts": "id, shop_id, capture_id, date, title, body, source_quote, created_at, updated_at",
             "thought_tags": "shop_id, thought_id, tag, position",
         })
-    if expected_version == SCHEMA_VERSION:
+    if expected_version >= 7:
         required.update({
             "custom_field_config": "shop_id, version, updated_at",
             "custom_field": "id, shop_id, key, display_name, name_identity, value_type, "
@@ -564,6 +597,16 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
             "custom_import_mapping": "id, shop_id, source_header, header_identity, target_kind, "
                                      "generic_field, field_id, enabled, created_at, updated_at",
         })
+    if expected_version >= 8:
+        required["entry"] = (
+            "id, shop_id, date, type, category, amount, item, qty, unit, note, "
+            "source, raw_text, batch_id, created_at, period_month, platform, channel, "
+            "amount_basis, external_id, source_system, granularity, "
+            "voided_at, void_reason, voided_by"
+        )
+        required["entry_void_audit"] = (
+            "id, shop_id, entry_id, actor, reason, before_json, created_at"
+        )
     try:
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if not version or version[0] != str(expected_version):
@@ -577,7 +620,7 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                 "idx_thoughts_capture": ("shop_id", "capture_id", "created_at", "id"),
                 "idx_thought_tags_lookup": ("shop_id", "tag", "thought_id"),
             }
-            if expected_version == SCHEMA_VERSION:
+            if expected_version >= 7:
                 indexes.update({
                     "idx_entry_workspace_id": ("shop_id", "id"),
                     "idx_sale_workspace_id": ("shop_id", "id"),
@@ -590,6 +633,8 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                     "idx_custom_alias_field": ("shop_id", "field_id", "enabled", "source_identity"),
                     "idx_custom_import_mapping": ("shop_id", "enabled", "header_identity"),
                 })
+            if expected_version >= 8:
+                indexes["idx_entry_void_audit"] = ("shop_id", "entry_id", "created_at", "id")
             for name, columns in indexes.items():
                 if tuple(row[2] for row in conn.execute(f"PRAGMA index_info({name})")) != columns:
                     return False
@@ -599,7 +644,7 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                 "thought_tags": {("shop_id", "thought_id", "tag"),
                                  ("shop_id", "thought_id", "position")},
             }
-            if expected_version == SCHEMA_VERSION:
+            if expected_version >= 7:
                 unique_keys.update({
                     "entry": {("shop_id", "id")},
                     "sale": {("shop_id", "id")},
@@ -629,7 +674,7 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                 "thought_tags": {(("thoughts", "shop_id", "shop_id"),
                                   ("thoughts", "thought_id", "id"))},
             }
-            if expected_version == SCHEMA_VERSION:
+            if expected_version >= 7:
                 foreign_keys.update({
                     "custom_field_config": {(("shop", "shop_id", "id"),)},
                     "custom_field": {(("shop", "shop_id", "id"),)},
@@ -656,6 +701,11 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                                             ("custom_field", "field_id", "id"))},
                     "custom_import_mapping": {(("shop", "shop_id", "id"),)},
                 })
+            if expected_version >= 8:
+                foreign_keys["entry_void_audit"] = {
+                    (("shop", "shop_id", "id"),),
+                    (("entry", "shop_id", "shop_id"), ("entry", "entry_id", "id")),
+                }
             for table, expected in foreign_keys.items():
                 groups = {}
                 for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
@@ -704,6 +754,13 @@ def _apply_v7(conn):
             f"SELECT 1 FROM sqlite_master WHERE name IN ({placeholders})", names).fetchone():
         raise ValueError("v6 数据库已有自定义字段表，请核对迁移状态")
     _create_custom_field_schema(conn)
+    conn.execute("UPDATE meta SET value='7' WHERE key='schema_version'")
+
+
+def _apply_v8(conn):
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='entry_void_audit'").fetchone():
+        raise ValueError("v7 数据库已有账目作废审计表，请核对迁移状态")
+    _apply_void_entry_columns(conn)
     conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
 
 
@@ -714,7 +771,12 @@ def migrate_v5_to_v6(conn):
 
 def migrate_v6_to_v7(conn):
     """为已校验的 v6 副本增加自定义字段表；不回填历史属性。"""
-    _migrate_in_savepoint(conn, "custom_fields_v7", 6, _apply_v7, SCHEMA_VERSION)
+    _migrate_in_savepoint(conn, "custom_fields_v7", 6, _apply_v7, 7)
+
+
+def migrate_v7_to_v8(conn):
+    """为已校验的 v7 副本增加账目软作废字段与审计表。"""
+    _migrate_in_savepoint(conn, "void_entry_v8", 7, _apply_v8, SCHEMA_VERSION)
 
 
 def migrate_to_current(conn):
@@ -728,6 +790,9 @@ def migrate_to_current(conn):
         current = 6
     if current == 6:
         migrate_v6_to_v7(conn)
+        current = 7
+    if current == 7:
+        migrate_v7_to_v8(conn)
         return
     if current == SCHEMA_VERSION and database_schema_ready(conn):
         return
@@ -765,7 +830,7 @@ class Store(ABC):
 
     @abstractmethod
     def list_entries(self, shop_id: str, start: str, end: str,
-                     type_: str | None = None) -> list: ...
+                     type_: str | None = None, *, include_voided: bool = False) -> list: ...
 
     @abstractmethod
     def get_entry(self, entry_id: str) -> dict | None: ...
@@ -775,6 +840,9 @@ class Store(ABC):
 
     @abstractmethod
     def delete_entry(self, entry_id: str) -> bool: ...
+
+    @abstractmethod
+    def void_entry(self, entry_id: str, *, actor: str, reason: str | None = None) -> dict: ...
 
     @abstractmethod
     def summary(self, shop_id: str, start: str, end: str) -> dict: ...
@@ -1021,7 +1089,10 @@ class SqliteStore(Store):
                 migrate_to_current(self.conn)
                 return
             if database_schema_ready(self.conn, expected_version=6):
-                migrate_v6_to_v7(self.conn)
+                migrate_to_current(self.conn)
+                return
+            if database_schema_ready(self.conn, expected_version=7):
+                migrate_v7_to_v8(self.conn)
                 return
             existing_meta = self.conn.execute("SELECT name FROM sqlite_master WHERE name='meta'").fetchone()
             if existing_meta:
@@ -1037,7 +1108,8 @@ class SqliteStore(Store):
             'entry': {'period_month': 'TEXT', 'platform': "TEXT NOT NULL DEFAULT ''",
                       'channel': "TEXT NOT NULL DEFAULT ''", 'amount_basis': "TEXT NOT NULL DEFAULT 'gross'",
                       'external_id': 'TEXT', 'source_system': "TEXT NOT NULL DEFAULT ''",
-                      'granularity': "TEXT NOT NULL DEFAULT 'daily'"},
+                      'granularity': "TEXT NOT NULL DEFAULT 'daily'",
+                      'voided_at': 'TEXT', 'void_reason': 'TEXT', 'voided_by': 'TEXT'},
             'sale': {'platform': "TEXT NOT NULL DEFAULT ''", 'channel': "TEXT NOT NULL DEFAULT ''",
                      'product_category': "TEXT NOT NULL DEFAULT ''", 'unit': "TEXT NOT NULL DEFAULT ''",
                      'amount_basis': "TEXT NOT NULL DEFAULT 'gross'", 'external_id': 'TEXT',
@@ -1105,6 +1177,7 @@ class SqliteStore(Store):
         with self.transaction():
             _create_thought_schema(self.conn)
             _create_custom_field_schema(self.conn)
+            _apply_void_entry_columns(self.conn)
 
     def close(self) -> None:
         self.conn.close()
@@ -1263,12 +1336,14 @@ class SqliteStore(Store):
                 ids.append(eid)
         return ids
 
-    def list_entries(self, shop_id, start, end, type_=None):
+    def list_entries(self, shop_id, start, end, type_=None, *, include_voided=False):
         sql = ("SELECT * FROM entry WHERE shop_id=? AND date>=? AND date<=?")
         args = [shop_id, start, end]
         if type_:
             sql += " AND type=?"
             args.append(type_)
+        if not include_voided:
+            sql += " AND voided_at IS NULL"
         sql += " ORDER BY date, created_at"
         return self._rows(self.conn.execute(sql, args))
 
@@ -1300,6 +1375,41 @@ class SqliteStore(Store):
             self.observation_delete_origin(row["shop_id"], f"entry:{entry_id}:")
             self.conn.execute("DELETE FROM entry WHERE id=?", (entry_id,))
         return True
+
+    def void_entry(self, entry_id, *, actor, reason=None):
+        """软作废账目：保留行并写审计；已作废则幂等返回当前状态。"""
+        if not isinstance(actor, str) or not actor.strip():
+            raise ValueError("作废操作者不能为空")
+        actor = actor.strip()
+        if reason is not None:
+            if not isinstance(reason, str):
+                raise ValueError("作废原因必须是字符串")
+            reason = reason.strip()
+            if len(reason) > 500:
+                raise ValueError("作废原因最多 500 个字符")
+            if not reason:
+                reason = None
+        with self.transaction():
+            row = self.get_entry(entry_id)
+            if not row:
+                raise KeyError("entry_not_found")
+            if row.get("voided_at"):
+                return {"entry": row, "already_voided": True, "audit_id": None}
+            when = now_iso()
+            before = dict(row)
+            self.conn.execute(
+                "UPDATE entry SET voided_at=?, void_reason=?, voided_by=? WHERE id=? AND voided_at IS NULL",
+                (when, reason, actor, entry_id),
+            )
+            self.observation_delete_origin(row["shop_id"], f"entry:{entry_id}:")
+            audit_id = new_id("eva")
+            self.conn.execute(
+                """INSERT INTO entry_void_audit(id, shop_id, entry_id, actor, reason, before_json, created_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (audit_id, row["shop_id"], entry_id, actor, reason,
+                 json.dumps(before, ensure_ascii=False, sort_keys=True), when),
+            )
+            return {"entry": self.get_entry(entry_id), "already_voided": False, "audit_id": audit_id}
 
     # ------------------------------------------------------------ 汇总
 
@@ -1769,7 +1879,7 @@ class SqliteStore(Store):
         return (str(event_time), str(record.get("created_at") or ""),
                 str(record.get("id") or ""))
 
-    def _linked_rows(self, shop_id, record):
+    def _linked_rows(self, shop_id, record, *, include_voided=False):
         refs, malformed = self._safe_json_list(record.get("ledger_refs"))
         entry_ids, sale_ids = [], []
         for ref in refs:
@@ -1782,7 +1892,7 @@ class SqliteStore(Store):
             else:
                 malformed += 1
 
-        def fetch(table, ids):
+        def fetch(table, ids, *, drop_voided=False):
             if not ids:
                 return [], 0
             unique = list(dict.fromkeys(ids))
@@ -1791,9 +1901,11 @@ class SqliteStore(Store):
                 f"SELECT * FROM {table} WHERE shop_id=? AND id IN ({marks})",
                 [shop_id, *unique]))
             found = {row["id"] for row in rows}
+            if drop_voided:
+                rows = [row for row in rows if not row.get("voided_at")]
             return rows, len(set(unique) - found)
 
-        entries, missing_entries = fetch("entry", entry_ids)
+        entries, missing_entries = fetch("entry", entry_ids, drop_voided=not include_voided)
         sales, missing_sales = fetch("sale", sale_ids)
         entries.sort(key=lambda row: (row.get("created_at") or "", row["id"]))
         sales.sort(key=lambda row: (row.get("created_at") or "", row["id"]))
@@ -1901,7 +2013,7 @@ class SqliteStore(Store):
             "SELECT * FROM record WHERE shop_id=? AND id=?", (shop_id, record_id)).fetchone())
         if not record:
             return None
-        entries, sales, unresolved = self._linked_rows(shop_id, record)
+        entries, sales, unresolved = self._linked_rows(shop_id, record, include_voided=True)
         observations = self._rows(self.conn.execute(
             "SELECT * FROM observation WHERE shop_id=? AND record_id=?"
             " ORDER BY occurred_at, created_at, id", (shop_id, record_id)))
@@ -2316,7 +2428,8 @@ class SqliteStore(Store):
                   'custom_field_audit', 'custom_entry_value', 'custom_sale_value',
                   'custom_observation_value', 'custom_thought_value', 'custom_field_gap',
                   'custom_field_suggestion', 'custom_field_preview',
-                  'custom_field_alias', 'custom_import_mapping']
+                  'custom_field_alias', 'custom_import_mapping',
+                  'entry_void_audit']
         out = {"schema_version": SCHEMA_VERSION, "shop_id": shop_id, "tables": {}}
         for t in tables:
             if t == "shop":

@@ -169,7 +169,27 @@ Agent 整理时应当：
 
 > 我是随口记，帮你用说话或打字记生意账，也把新品灵感和经营随想留在一起。忙时可以记进货、开支和营业收入；想到新口味也随手记下，以后按时间或标签找回来。比如：“今天进了20斤南瓜80元”“记个想法：下周试芋圆新品 #新品”。想回看就说“这个月的新品随想”。金额或日期确实不清楚时，我会再问一句。糖水铺这边，先说一笔试试。
 
-原生 iLink worker 不自动发送此欢迎词或处理查询对话。介绍不承诺库存/剩料核算、任务提醒、撤销、随想编辑、任意改名、标签别名或固定报表；按能力接口的实际状态调整。
+原生 iLink worker 不自动发送此欢迎词或处理查询对话。介绍不承诺库存/剩料核算、任务提醒、随想编辑、任意改名、标签别名或固定报表；错账可调用 `ledger.void`（`POST /v1/entries/{id}/void`）软作废并保留审计，不物理删除；按能力接口的实际状态调整。
+
+## 账目作废（软作废）
+
+能力项 `ledger.void` 为 `available` 时，外部 Agent 可在用户确认后调用：
+
+`POST /v1/entries/{entry_id}/void`
+
+```json
+{
+  "workspace_id": "shop-a",
+  "request_id": "void-20261029-001",
+  "reason": "语音听写成马清粉，与正确马蹄粉重复"
+}
+```
+
+- Bearer 认证；工作空间必须属于当前主体。目标账目不存在或不属于该工作空间返回 `404 entry_not_found`。
+- 软作废：保留原行，写入 `voided_at` / `void_reason` / `voided_by` 与 `entry_void_audit` 审计；不物理删除。
+- 已作废再调用仍返回 200，`already_voided=true`；同 `request_id` 重放则 `duplicate=true`。
+- 默认 `GET /v1/entries`、`/v1/summary`、报表与 timeline 账目预览不再计入已作废行；`GET /v1/captures/{id}` 详情仍可见并带作废字段。
+- 金额纠错优先用修正接口；作废用于整笔错误或重复入账。
 
 ## 必须遵守
 
@@ -182,7 +202,7 @@ Agent 整理时应当：
 
 ## 当前基础
 
-schema v6 保留 `record` 原话、`entry`/`sale`/`observation` 投影和旧 `shop_id` 兼容，新增独立 `thoughts` 和可索引 `thought_tags`；随想经自己的 `capture_id` 关联来源，不向 `ledger_refs` 塞入 `thought:`。公开字段使用 `workspace_id`。profile 作为工作空间元数据和模块边界，REST 和 iLink Bot 共用 `AgentService`，工作空间必须属于服务端配置的 owner。
+schema v8（自 v7 起含自定义字段，v8 增加账目软作废字段与审计表）在 v6 基础上保留 `record` 原话、`entry`/`sale`/`observation` 投影和旧 `shop_id` 兼容，新增独立 `thoughts` 和可索引 `thought_tags`；随想经自己的 `capture_id` 关联来源，不向 `ledger_refs` 塞入 `thought:`。公开字段使用 `workspace_id`。profile 作为工作空间元数据和模块边界，REST 和 iLink Bot 共用 `AgentService`，工作空间必须属于服务端配置的 owner。
 
 ## 写入与重试
 

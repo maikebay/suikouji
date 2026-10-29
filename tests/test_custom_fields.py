@@ -134,11 +134,21 @@ class CustomFieldDefinitionTests(unittest.TestCase):
                              "custom_field_audit", "custom_entry_value", "custom_sale_value",
                              "custom_observation_value", "custom_thought_value", "custom_field_gap",
                              "custom_field_suggestion", "custom_field_preview",
-                             "custom_field_alias", "custom_import_mapping"):
-                    store.conn.execute(f"DROP TABLE {name}")
+                             "custom_field_alias", "custom_import_mapping", "entry_void_audit"):
+                    store.conn.execute(f"DROP TABLE IF EXISTS {name}")
                 for name in ("idx_entry_workspace_id", "idx_sale_workspace_id",
-                             "idx_observation_workspace_id"):
-                    store.conn.execute(f"DROP INDEX {name}")
+                             "idx_observation_workspace_id", "idx_entry_void_audit",
+                             "idx_entry_active"):
+                    store.conn.execute(f"DROP INDEX IF EXISTS {name}")
+                cols = [row[1] for row in store.conn.execute("PRAGMA table_info(entry)")]
+                if "voided_at" in cols:
+                    keep = [c for c in cols if c not in ("voided_at", "void_reason", "voided_by")]
+                    store.conn.execute("ALTER TABLE entry RENAME TO entry_old")
+                    store.conn.execute(
+                        f"CREATE TABLE entry AS SELECT {', '.join(keep)} FROM entry_old")
+                    store.conn.execute("DROP TABLE entry_old")
+                    store.conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_entry_shop_date ON entry(shop_id, date)")
                 store.conn.commit()
             with closing(sqlite3.connect(source)) as conn:
                 self.assertTrue(database_schema_ready(conn, expected_version=6))
