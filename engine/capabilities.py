@@ -89,6 +89,17 @@ _CAPABILITIES = (
         ("修正写回原业务行，不新增重复账目",),
     ),
     Capability(
+        "ledger.void",
+        "available",
+        "按账目编号软作废错误账目，保留原行与审计记录，默认从汇总与列表排除",
+        "POST /v1/entries/{entry_id}/void + workspace_id + request_id + optional reason",
+        "必须确认目标账目与作废原因；跨工作空间目标不可见",
+        ("不物理删除；重复作废幂等返回已作废状态",
+         "已作废账目默认不进入 timeline 预览、summary、entries 列表与报表",
+         "原话详情仍可见已作废行及其 voided_at/void_reason",
+         "不能代替修正；金额纠错优先用 ledger.correction"),
+    ),
+    Capability(
         "import.csv",
         "available",
         "预览并导入销售或费用 CSV，保留来源批次和去重身份",
@@ -491,7 +502,7 @@ def product_capabilities() -> dict:
                             "缺信息时最多问一两句账本叫法或主要生意，通过真实部署配置持久化；"
                             "没有配置能力须说明需要完成连接。不能因其他行业自动选择餐饮profile。"
                             "仅能力available且连接完成后使用介绍，以实际账本名替换占位符；"
-                            "不承诺内置查询对话、模型、固定报表、画像/改名、撤销、任务提醒或库存耗料。",
+                            "不承诺内置查询对话、模型、固定报表、画像/改名、任务提醒或库存耗料；账目作废仅通过软作废接口，不物理删除。",
                 "introduction_template": (
                     "我是随口记，帮你用说话或打字记生意账，也把新品灵感和经营随想留在一起。"
                     "忙时可以记进货、开支和营业收入；想到新口味也随手记下，以后按时间或标签找回来。"

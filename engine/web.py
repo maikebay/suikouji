@@ -342,6 +342,12 @@ class DemoHandler(BaseHTTPRequestHandler):
         if path == "/v1/custom-field-values/backfill":
             return self._send(200, service.backfill_custom_field_values(
                 principal, workspace, payload.get("request_id"), payload.get("revision")))
+        void_match = re.fullmatch(r"/v1/entries/([^/]+)/void", path)
+        if void_match:
+            result = service.void_entry(
+                principal, workspace, void_match.group(1),
+                payload.get("request_id"), reason=payload.get("reason"))
+            return self._send(200, result)
         if path == "/v1/reviews":
             review = service.review(principal, workspace, payload.get("request_id"),
                                     payload.get("target_id"), payload.get("fields"), payload.get("reason"))
@@ -384,6 +390,8 @@ class DemoHandler(BaseHTTPRequestHandler):
         }.get(path)
         if allow is None and re.fullmatch(r"/v1/captures/[^/]+", path):
             allow = "GET"
+        if allow is None and re.fullmatch(r"/v1/entries/[^/]+/void", path):
+            allow = "POST"
         if allow is None:
             raise AgentError("not_found", "没有这个 v1 接口", status=404)
         if self.command not in allow.split(", "):

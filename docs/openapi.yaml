@@ -162,7 +162,32 @@ paths:
         - {$ref: '#/components/parameters/End'}
         - {name: type, in: query, schema: {type: string}}
       responses:
-        '200': {description: Entries}
+        '200': {description: Active (non-voided) entries by default}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/entries/{entry_id}/void:
+    post:
+      operationId: voidEntry
+      description: Soft-void a ledger entry by id. Keeps the row and writes an audit record. Idempotent if already voided. Call only after the user confirmed the wrong entry.
+      parameters:
+        - name: entry_id
+          in: path
+          required: true
+          schema: {type: string, minLength: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/VoidEntryRequest'}
+      responses:
+        '200':
+          description: Void result; duplicate is true on identical request_id replay
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VoidEntryResponse'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
   /v1/sales:
     get:
@@ -717,6 +742,30 @@ components:
           type: array
           description: Original correction history when present, preserved on request replay
           items: {type: object}
+    VoidEntryRequest:
+      type: object
+      required: [workspace_id, request_id]
+      properties:
+        workspace_id: {type: string, minLength: 1}
+        request_id: {type: string, minLength: 1, maxLength: 100}
+        reason: {type: string, minLength: 1, maxLength: 500, description: Optional void reason shown in audit}
+    VoidEntryResponse:
+      type: object
+      required: [duplicate, already_voided, entry]
+      properties:
+        duplicate:
+          type: boolean
+          description: True on identical request_id replay within principal/workspace/void_entry
+        already_voided:
+          type: boolean
+          description: True when the entry was already voided before this call (also true on replay of a prior void)
+        entry:
+          type: object
+          description: Entry row including voided_at, void_reason, voided_by when voided
+        audit_id:
+          type: string
+          nullable: true
+          description: New audit row id on first void; null when already voided or on replay without a new audit
     ReviewRequest:
       type: object
       required: [workspace_id, request_id, target_id, fields, reason]

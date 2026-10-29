@@ -249,6 +249,7 @@ class AgentHttpContractTests(unittest.TestCase):
             ("/v1/timeline", {"GET"}, "GET"),
             ("/v1/summary", {"GET"}, "GET"),
             ("/v1/entries", {"GET"}, "GET"),
+            ("/v1/entries/example/void", {"POST"}, "POST"),
             ("/v1/sales", {"GET"}, "GET"),
             ("/v1/observations", {"GET"}, "GET"),
             ("/v1/reviews", {"GET", "POST"}, "GET, POST"),

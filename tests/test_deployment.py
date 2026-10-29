@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from engine import deployment
+from engine.store import SCHEMA_VERSION
 from engine.agent_service import AgentService, Principal
 from engine.runtime import probe_database
 from engine.store import SqliteStore
@@ -70,7 +71,7 @@ class DeploymentTests(unittest.TestCase):
         for sql, undo in (("ALTER TABLE product RENAME COLUMN category TO broken_category",
                            "ALTER TABLE product RENAME COLUMN broken_category TO category"),
                           ("UPDATE meta SET value='1' WHERE key='schema_version'",
-                           "UPDATE meta SET value='7' WHERE key='schema_version'")):
+                           "UPDATE meta SET value='%d' WHERE key='schema_version'" % SCHEMA_VERSION)):
             with closing(sqlite3.connect(str(self.db))) as conn:
                 conn.execute(sql)
                 conn.commit()

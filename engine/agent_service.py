@@ -69,6 +69,8 @@ class AgentService:
             "list_timeline": {"method": "GET", "path": "/v1/timeline"},
             "get_summary": {"method": "GET", "path": "/v1/summary"},
             "list_entries": {"method": "GET", "path": "/v1/entries"},
+            "void_entry": {"method": "POST", "path": "/v1/entries/{entry_id}/void",
+                           "confirmation": "required"},
             "list_sales": {"method": "GET", "path": "/v1/sales"},
             "list_observations": {"method": "GET", "path": "/v1/observations"},
             "list_thoughts": {"method": "GET", "path": "/v1/thoughts"},
@@ -608,6 +610,37 @@ class AgentService:
         self.workspace(principal, workspace_id)
         start, end = self._bounds(start, end)
         return self.store.list_entries(workspace_id, start, end, type_)
+
+    def void_entry(self, principal: Principal, workspace_id: str, entry_id: str,
+                   request_id: str, reason=None) -> dict:
+        self.workspace(principal, workspace_id)
+        if not isinstance(entry_id, str) or not entry_id.strip():
+            raise AgentError("invalid_entry_id", "账目编号不能为空")
+        entry_id = entry_id.strip()
+        request_id = self._request_id(request_id)
+        if reason is not None and not isinstance(reason, str):
+            raise AgentError("invalid_reason", "作废原因必须是字符串")
+        payload = {"entry_id": entry_id, "reason": reason}
+        with self.store.transaction():
+            cached, claim, recovered = self._idempotent(
+                principal, workspace_id, "void_entry", request_id, payload)
+            if cached is not None:
+                return {**cached, "duplicate": True}
+            row = self.store.get_entry(entry_id)
+            if not row or row.get("shop_id") != workspace_id:
+                raise AgentError("entry_not_found", "账目不存在或不属于当前工作空间", status=404)
+            try:
+                result = self.store.void_entry(entry_id, actor=principal.id, reason=reason)
+            except ValueError as exc:
+                raise AgentError("invalid_void", str(exc)) from exc
+            response = {
+                "duplicate": False,
+                "already_voided": result["already_voided"],
+                "entry": result["entry"],
+                "audit_id": result["audit_id"],
+            }
+            self._finish(claim, response)
+            return response
 
     def sales(self, principal: Principal, workspace_id: str, start=None, end=None) -> list:
         self.workspace(principal, workspace_id)
