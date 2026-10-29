@@ -177,6 +177,42 @@ class VoidEntryMigrateTests(unittest.TestCase):
                 self.assertEqual(conn.execute(
                     "SELECT COUNT(*) FROM entry_void_audit").fetchone()[0], 0)
 
+    def test_v7_copy_migration_reaches_v8_with_void_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, destination = root / "v7.db", root / "v8.db"
+            with closing(SqliteStore(str(source))) as store:
+                store.ensure_shop("shop", "测试店", owner_id="owner", profile_id="restaurant")
+                entry_id = store.add_entries([{
+                    "shop_id": "shop", "date": "2026-10-29", "type": "purchase",
+                    "category": "食材成本", "amount": 12.5, "item": "马蹄粉",
+                }])[0]
+                store.conn.execute("DROP INDEX IF EXISTS idx_entry_active")
+                store.conn.execute("DROP INDEX IF EXISTS idx_entry_void_audit")
+                store.conn.execute("DROP TABLE IF EXISTS entry_void_audit")
+                for column in ("voided_by", "void_reason", "voided_at"):
+                    store.conn.execute(f"ALTER TABLE entry DROP COLUMN {column}")
+                store.conn.execute("UPDATE meta SET value='7' WHERE key='schema_version'")
+                store.conn.commit()
+            with closing(sqlite3.connect(source)) as conn:
+                self.assertTrue(database_schema_ready(conn, expected_version=7))
+                self.assertEqual(conn.execute(
+                    "SELECT amount, item FROM entry WHERE id=?", (entry_id,)).fetchone(),
+                    (12.5, "马蹄粉"))
+            original = source.read_bytes()
+            result = migrate_database(str(source), str(destination))
+            self.assertEqual(result["source_schema_version"], 7)
+            self.assertEqual(result["schema_version"], SCHEMA_VERSION)
+            self.assertEqual(source.read_bytes(), original)
+            with closing(sqlite3.connect(destination)) as conn:
+                self.assertTrue(database_schema_ready(conn))
+                row = conn.execute(
+                    "SELECT amount, item, voided_at, void_reason, voided_by FROM entry WHERE id=?",
+                    (entry_id,)).fetchone()
+                self.assertEqual(row, (12.5, "马蹄粉", None, None, None))
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM entry_void_audit").fetchone()[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
