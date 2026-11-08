@@ -705,7 +705,9 @@ components:
         bill_category:
           type: string
           maxLength: 80
-          description: Option id of cf_bill_category, such as opt_bill_wages. Not a display name.
+          description: >-
+            Option id on the workspace bill field (field id cf_bill_category or key
+            bill_category). Not a display name, and not an option id from a global catalog.
         amount: {type: number, minimum: 0, maximum: 1000000000000}
         amount_basis: {type: string, enum: [gross, settlement]}
         granularity: {type: string, enum: [daily, transaction]}

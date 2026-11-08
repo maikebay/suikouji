@@ -1,8 +1,12 @@
-"""工作空间名称 → 分类规则。服务端是唯一权威，不扫描历史，也不调用模型。
+"""工作空间名称 → 分类规则。服务端是唯一权威，不按历史笔数或模型猜测名称。
 
 规则按规范化后的账目名称精确匹配（Unicode NFC，再去掉首尾空白，区分大小写）。
 已确认且启用的规则才参与入账；候选只留档，不套用，也不拦截入账。
 改规则不回写已经记下的账。
+
+账单分类字段按工作空间里真实的 field_id 或 key 查找。合法的账单选项就是该字段上
+已经启用的选项；和账目分类的组合来自调用方写明的值，或该选项在已保存账上仅有的一种
+分类。不使用一份写死的选项编号表，也不要求工作空间里不存在的选项。
 """
 from __future__ import annotations
 
@@ -11,27 +15,14 @@ import json
 import re
 import unicodedata
 
-from .agent_normalization import CATEGORY_TYPE, EXPENSE_CATEGORIES
-from .custom_fields import CustomFieldError, CustomFieldStore, display_identity, scope_matches
+from .agent_normalization import CATEGORY_TYPE
+from .custom_fields import (
+    BILL_FIELD_IDS, BILL_FIELD_KEYS, CustomFieldError, CustomFieldStore, display_identity,
+)
 from .model import new_id, now_iso
 
 
-BILL_FIELD_KEY = "cf_bill_category"
 RULE_STATES = ("confirmed", "candidate")
-# 账单选项编号和账目类型/分类的合法组合。不是按名称猜测，也不是一对一的历史统计。
-LEGAL_BILL_PAIRS = {
-    "opt_bill_revenue": ("revenue", "营业额"),
-    "opt_bill_ingredients": ("purchase", "食材成本"),
-    "opt_bill_rent": ("expense", "房租"),
-    "opt_bill_wages": ("expense", "人工"),
-    "opt_bill_utilities": ("expense", "水电"),
-    "opt_bill_commission": ("expense", "平台佣金"),
-    "opt_bill_packaging": ("expense", "包装耗材"),
-    "opt_bill_promotion": ("expense", "推广"),
-    "opt_bill_repair": ("expense", "维修"),
-    "opt_bill_tax": ("expense", "税费"),
-    "opt_bill_other": ("expense", "其他支出"),
-}
 PRIORITY = (
     "explicit_values_on_this_entry",
     "one_off_correction_of_this_entry",
@@ -67,13 +58,6 @@ def normalize_item(value) -> str:
     return text
 
 
-def legal_pairs() -> list:
-    return [
-        {"bill_category": option_id, "type": entry_type, "category": category}
-        for option_id, (entry_type, category) in LEGAL_BILL_PAIRS.items()
-    ]
-
-
 def assert_ledger_pair(entry_type, category) -> None:
     expected = CATEGORY_TYPE.get(category)
     if entry_type not in {"revenue", "purchase", "expense"} or expected != entry_type:
@@ -82,23 +66,6 @@ def assert_ledger_pair(entry_type, category) -> None:
             "账目类型和分类不是合法组合",
             details={"type": entry_type, "category": category},
         )
-
-
-def _pair_error(entry_type, category, bill_category):
-    expected = LEGAL_BILL_PAIRS.get(bill_category)
-    details = {
-        "type": entry_type,
-        "category": category,
-        "bill_category": bill_category,
-        "legal_pairs": legal_pairs(),
-    }
-    if expected:
-        details["expected"] = {"type": expected[0], "category": expected[1]}
-    raise NameRuleError(
-        "illegal_classification",
-        "账目分类和账单分类不是允许的组合",
-        details=details,
-    )
 
 
 class NameRuleStore:
@@ -115,25 +82,20 @@ class NameRuleStore:
         return int(row[0]) if row else 0
 
     def bill_field(self, workspace_id: str):
-        for field in CustomFieldStore(self.store).list_fields(workspace_id)["fields"]:
-            if field["key"] == BILL_FIELD_KEY:
-                return field
+        fields = CustomFieldStore(self.store).list_fields(workspace_id)["fields"]
+        for field_id in BILL_FIELD_IDS:
+            found = next((field for field in fields if field["field_id"] == field_id), None)
+            if found:
+                return found
+        for key in BILL_FIELD_KEYS:
+            found = next((field for field in fields if field["key"] == key), None)
+            if found:
+                return found
         return None
 
     def list_rules(self, workspace_id: str) -> dict:
         field = self.bill_field(workspace_id)
-        installed = {}
-        if field:
-            installed = {option["option_id"]: option for option in field.get("options", [])}
-        pairs = []
-        for item in legal_pairs():
-            option = installed.get(item["bill_category"])
-            pairs.append({
-                **item,
-                "installed": option is not None,
-                "enabled": bool(option and option["enabled"]),
-                "display_name": option["display_name"] if option else None,
-            })
+        pairs = self._legal_pairs(workspace_id, field)
         rules = [self._public(row) for row in self.store.conn.execute(
             """SELECT * FROM name_rule WHERE shop_id=?
                ORDER BY item_identity, state, id""",
@@ -145,8 +107,10 @@ class NameRuleStore:
         return {
             "rules_version": self.rules_version(workspace_id),
             "custom_fields_version": CustomFieldStore(self.store).config_version(workspace_id),
-            "bill_field_key": BILL_FIELD_KEY,
+            "bill_field_key": field["key"] if field else None,
             "bill_field_id": field["field_id"] if field else None,
+            "bill_field_ids": list(BILL_FIELD_IDS),
+            "bill_field_keys": list(BILL_FIELD_KEYS),
             "priority": list(PRIORITY),
             "not_in_mvp": list(NOT_IN_MVP),
             "match": {
@@ -312,10 +276,24 @@ class NameRuleStore:
         if not omitted_type and not omitted_category:
             assert_ledger_pair(entry_type, category)
         elif omitted_type and omitted_category and bill_explicit:
-            pair = LEGAL_BILL_PAIRS.get(explicit_bill)
-            if not pair:
-                self._reject_bill_token(field, explicit_bill)
-            entry_type, category = pair
+            self._require_option(field, explicit_bill)
+            if rule and rule["bill_category"] == explicit_bill:
+                entry_type, category = rule["entry_type"], rule["category"]
+            else:
+                observed = self._observed_ledger_pairs(workspace_id, field, explicit_bill)
+                if len(observed) != 1:
+                    raise NameRuleError(
+                        "classification_required",
+                        "请写明这笔账的类型和分类。账单选项不会按写死的对照表猜测分类",
+                        details={
+                            "item": identity,
+                            "bill_category": explicit_bill,
+                            "observed": [{"type": item[0], "category": item[1]} for item in observed],
+                            "rules_version": rules_version,
+                            "read": "GET /v1/name-rules",
+                        },
+                    )
+                entry_type, category = observed[0]
         elif omitted_type and omitted_category and rule:
             entry_type = rule["entry_type"]
             category = rule["category"]
@@ -409,8 +387,9 @@ class NameRuleStore:
         if not field:
             raise NameRuleError(
                 "bill_field_missing",
-                "工作空间还没有账单分类字段 cf_bill_category",
-                details={"bill_field_key": BILL_FIELD_KEY},
+                "工作空间还没有账单分类字段",
+                details={"bill_field_ids": list(BILL_FIELD_IDS),
+                         "bill_field_keys": list(BILL_FIELD_KEYS)},
             )
         fields = [item for item in (row.get("custom_fields") or [])
                   if item.get("field_id") != field["field_id"]]
@@ -421,13 +400,9 @@ class NameRuleStore:
     def _assert_bill(self, workspace_id, entry_type, category, bill, field=None):
         assert_ledger_pair(entry_type, category)
         field = self.bill_field(workspace_id) if field is None else field
-        option = self._require_option(field, bill)
-        expected = LEGAL_BILL_PAIRS.get(option["option_id"])
-        if expected != (entry_type, category):
-            _pair_error(entry_type, category, option["option_id"])
-        if not scope_matches(field["scopes"], "entry",
-                             {"entry_types": entry_type, "categories": category}):
-            raise NameRuleError("scope_mismatch", "账单分类字段不适用于这个账目类型或分类")
+        self._require_option(field, bill)
+        if not _bill_field_applies(field):
+            raise NameRuleError("scope_mismatch", "账单分类字段不适用于账目")
 
     def _require_option(self, field, bill):
         if not isinstance(bill, str) or not bill:
@@ -435,8 +410,10 @@ class NameRuleStore:
         if field is None:
             raise NameRuleError(
                 "bill_field_missing",
-                "工作空间还没有账单分类字段 cf_bill_category",
-                details={"bill_field_key": BILL_FIELD_KEY, "bill_category": bill},
+                "工作空间还没有账单分类字段",
+                details={"bill_field_ids": list(BILL_FIELD_IDS),
+                         "bill_field_keys": list(BILL_FIELD_KEYS),
+                         "bill_category": bill},
             )
         if not field["enabled"]:
             raise NameRuleError("field_disabled", "账单分类字段已停用")
@@ -463,7 +440,8 @@ class NameRuleStore:
         raise NameRuleError(
             "invalid_option",
             "账单分类选项不存在或已停用",
-            details={"bill_category": bill, "legal_pairs": legal_pairs()},
+            details={"bill_category": bill,
+                     "options": [item["option_id"] for item in options if item.get("enabled")]},
         )
 
     def _require_complete(self, entry_type, category, bill):
@@ -489,13 +467,54 @@ class NameRuleStore:
                 raise NameRuleError("illegal_classification", "账目分类不在允许范围内")
         if bill is not None:
             if entry_type is None or category is None:
-                pair = LEGAL_BILL_PAIRS.get(bill) if isinstance(bill, str) else None
-                if pair and entry_type is None and category is None:
-                    entry_type, category = pair
-                elif entry_type is None or category is None:
-                    self._require_option(self.bill_field(workspace_id), bill)
-                    return
+                self._require_option(self.bill_field(workspace_id), bill)
+                return
             self._assert_bill(workspace_id, entry_type, category, bill)
+
+    def _legal_pairs(self, workspace_id, field) -> list:
+        """只列出这个工作空间真实存在的选项，以及账上已经出现过的分类。"""
+        if not field:
+            return []
+        observed = self._observed_by_option(workspace_id, field["field_id"])
+        pairs = []
+        for option in field.get("options") or []:
+            uses = observed.get(option["option_id"], [])
+            base = {
+                "bill_category": option["option_id"],
+                "display_name": option["display_name"],
+                "installed": True,
+                "enabled": bool(option["enabled"]),
+            }
+            if not uses:
+                pairs.append({**base, "type": None, "category": None, "source": "option", "count": 0})
+                continue
+            for use in uses:
+                pairs.append({**base, "type": use["type"], "category": use["category"],
+                              "source": "history", "count": use["count"]})
+        return pairs
+
+    def _observed_by_option(self, workspace_id, field_id) -> dict:
+        rows = self.store.conn.execute(
+            """SELECT v.option_id AS option_id, e.type AS type, e.category AS category,
+                      COUNT(*) AS n
+               FROM custom_entry_value v
+               JOIN entry e ON e.shop_id=v.shop_id AND e.id=v.target_id
+               WHERE v.shop_id=? AND v.field_id=? AND e.voided_at IS NULL
+                 AND v.option_id IS NOT NULL
+               GROUP BY v.option_id, e.type, e.category
+               ORDER BY v.option_id, n DESC, e.type, e.category""",
+            (workspace_id, field_id))
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(row["option_id"], []).append(
+                {"type": row["type"], "category": row["category"], "count": row["n"]})
+        return grouped
+
+    def _observed_ledger_pairs(self, workspace_id, field, option_id) -> list:
+        if not field:
+            return []
+        uses = self._observed_by_option(workspace_id, field["field_id"]).get(option_id, [])
+        return [(item["type"], item["category"]) for item in uses]
 
     def _expect_version(self, workspace_id, rules_version):
         if type(rules_version) is not int or rules_version < 0:
@@ -620,7 +639,9 @@ def _safe_identity(value):
         return None
 
 
-# Expense categories are part of the legal ledger set; referenced so a future
-# edit that drops one from agent_normalization fails review of this module.
-assert set(LEGAL_BILL_PAIRS["opt_bill_wages"]) <= {"expense", "人工"}
-assert "人工" in EXPENSE_CATEGORIES
+def _bill_field_applies(field) -> bool:
+    """账单分类覆盖全部账目。字段上旧的分类过滤不能挡住进货或费用。"""
+    scopes = field.get("scopes") or []
+    if not scopes:
+        return True
+    return any(isinstance(scope, dict) and scope.get("record_type") == "entry" for scope in scopes)

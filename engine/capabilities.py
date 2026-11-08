@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from .name_rules import BILL_FIELD_KEY, legal_pairs
+from .name_rules import BILL_FIELD_IDS, BILL_FIELD_KEYS
 from .profile import list_profiles
 
 
@@ -312,7 +312,9 @@ def _classification_policy() -> dict:
         "server_owned": True,
         "history_or_ai_in_mvp": False,
         "keyword_matching": False,
-        "bill_field_key": BILL_FIELD_KEY,
+        "bill_field_ids": list(BILL_FIELD_IDS),
+        "bill_field_keys": list(BILL_FIELD_KEYS),
+        "bill_pairs": "workspace_options_and_stored_entries",
         "read": {"method": "GET", "path": "/v1/name-rules"},
         "write": {"method": "POST", "path": "/v1/name-rules",
                   "scopes": ["confirmed", "candidate"]},
@@ -340,11 +342,13 @@ def _classification_policy() -> dict:
                                 "and bill category. Do not guess and do not scan entry history.",
         "explicit_override": "Values sent on one entry win for that entry only. The rule row is unchanged.",
         "invalid_values": "A Chinese display name or unknown option is HTTP 400 invalid_option. "
-                          "An illegal type/category/bill_category triple is HTTP 400 illegal_classification. "
-                          "These are never HTTP 500.",
+                          "A ledger type/category mismatch is HTTP 400 illegal_classification. "
+                          "These are never HTTP 500. An installed option may pair with any valid ledger category; "
+                          "do not reject a combination because it is absent from a global option catalog.",
         "idempotency": "Replay the same request_id and body. That does not create a second rule or entry.",
         "sharing": "Rules belong to the workspace, survive restarts, and are visible to every agent of that workspace.",
-        "legal_pairs": legal_pairs(),
+        "legal_pairs": "Read GET /v1/name-rules. Pairs come from that workspace's bill-field options and the "
+                       "ledger categories already stored on entries. Do not require an option id that is not installed.",
         "example_confirm": {
             "method": "POST", "path": "/v1/name-rules",
             "body": {"workspace_id": "replace-with-authorized-workspace-id",
