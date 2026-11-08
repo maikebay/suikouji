@@ -42,7 +42,7 @@ class VoidEntryStoreTests(unittest.TestCase):
             P, "shop", text, request_id, received_at=RECEIVED, structured=structured)
 
     def test_fresh_database_is_schema_v8_with_void_columns(self):
-        self.assertEqual(SCHEMA_VERSION, 8)
+        self.assertEqual(SCHEMA_VERSION, 9)
         self.assertTrue(database_schema_ready(self.store.conn))
         columns = {row[1] for row in self.store.conn.execute("PRAGMA table_info(entry)")}
         self.assertTrue({"voided_at", "void_reason", "voided_by"} <= columns)
@@ -147,7 +147,8 @@ class VoidEntryMigrateTests(unittest.TestCase):
                              "custom_observation_value", "custom_thought_value",
                              "custom_field_gap", "custom_field_suggestion",
                              "custom_field_preview", "custom_field_alias",
-                             "custom_import_mapping", "entry_void_audit"):
+                             "custom_import_mapping", "entry_void_audit",
+                             "name_rule", "name_rule_config", "name_rule_audit"):
                     store.conn.execute(f"DROP TABLE IF EXISTS {name}")
                 for name in ("idx_entry_workspace_id", "idx_sale_workspace_id",
                              "idx_observation_workspace_id", "idx_entry_void_audit",
@@ -190,6 +191,8 @@ class VoidEntryMigrateTests(unittest.TestCase):
                 store.conn.execute("DROP INDEX IF EXISTS idx_entry_active")
                 store.conn.execute("DROP INDEX IF EXISTS idx_entry_void_audit")
                 store.conn.execute("DROP TABLE IF EXISTS entry_void_audit")
+                for name in ("name_rule_audit", "name_rule", "name_rule_config"):
+                    store.conn.execute(f"DROP TABLE IF EXISTS {name}")
                 for column in ("voided_by", "void_reason", "voided_at"):
                     store.conn.execute(f"ALTER TABLE entry DROP COLUMN {column}")
                 store.conn.execute("UPDATE meta SET value='7' WHERE key='schema_version'")

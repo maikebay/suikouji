@@ -110,6 +110,12 @@ def canonical_date(value) -> str:
     return text
 
 
+def _stable_option_id(value) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"opt_[a-z][a-z0-9_]{0,40}", value):
+        _reject("invalid_option", "选项编号格式不正确")
+    return value
+
+
 def normalize_key(value) -> str:
     key = _text(value, minimum=1, maximum=48, label="内部键", controls=True)
     if not _KEY_RE.fullmatch(key) or key in RESERVED_KEYS:
@@ -229,6 +235,19 @@ _FILTER_OPS = {
     "number": {"between", "missing", "not_applicable"},
     "date": {"between", "missing", "not_applicable"},
 }
+
+
+def _option_by_display(field, value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        identity = display_identity(value)
+    except CustomFieldError:
+        return None
+    for option in field.get("options", []):
+        if option["display_name"] == value or display_identity(option["display_name"]) == identity:
+            return option
+    return None
 
 
 def _public_field(row) -> dict:
@@ -353,17 +372,22 @@ class CustomFieldStore:
         return {"custom_fields_version": version, "field": after}
 
     def add_option(self, workspace_id: str, field_id: str, display_name: str, *,
-                   actor: str, confirmation: dict) -> dict:
+                   actor: str, confirmation: dict, option_id: str | None = None) -> dict:
         field = self._require(workspace_id, field_id)
         if field["value_type"] != "enum":
             _reject("invalid_type", "只有枚举字段可以增加选项")
         name = _text(display_name, minimum=1, maximum=40, label="选项名称", controls=True)
+        if option_id is not None:
+            option_id = _stable_option_id(option_id)
+            if self.store.conn.execute(
+                    "SELECT 1 FROM custom_field_option WHERE id=?", (option_id,)).fetchone():
+                _reject("duplicate_option", "选项编号已存在")
         counts = self._option_counts(workspace_id, field_id)
         if counts["total"] >= MAX_OPTIONS or counts["enabled"] >= MAX_ENABLED_OPTIONS:
             _reject("limit_exceeded", "枚举选项数量已达上限")
         self._assert_option_unique(workspace_id, field_id, name)
         created = now_iso()
-        option_id = new_id("opt")
+        option_id = option_id or new_id("opt")
         with self.store.transaction():
             self.store.conn.execute(
                 """INSERT INTO custom_field_option(
@@ -731,10 +755,16 @@ class CustomFieldStore:
         elif value_type == "date":
             stored["date_value"] = canonical_date(value)
         elif value_type == "enum":
+            if isinstance(value, dict) and "display_name" in value and "option_id" not in value:
+                _reject("invalid_option", "枚举值必须使用选项编号，不能使用显示名")
             option_id = value.get("option_id") if isinstance(value, dict) else value
             option = next((row for row in field.get("options", [])
                            if row["option_id"] == option_id), None)
             if not option or not option["enabled"]:
+                named = _option_by_display(field, option_id)
+                if named:
+                    _reject("invalid_option",
+                            f"枚举值必须使用选项编号 {named['option_id']}，不能使用显示名")
                 _reject("invalid_option", "枚举选项不存在或已停用")
             stored["option_id"] = option_id
         return stored
@@ -947,13 +977,24 @@ class CustomFieldStore:
         public = []
         seen = set()
         for position, option in enumerate(options):
-            name = option.get("display_name") if isinstance(option, dict) else option
+            explicit_id = None
+            if isinstance(option, dict):
+                if set(option) - {"display_name", "option_id"}:
+                    _reject("invalid_option", "选项含有未允许的字段")
+                name = option.get("display_name")
+                if "option_id" in option:
+                    explicit_id = _stable_option_id(option.get("option_id"))
+            else:
+                name = option
             name = _text(name, minimum=1, maximum=40, label="选项名称", controls=True)
             identity = display_identity(name)
             if identity in seen:
                 _reject("duplicate_option", "枚举选项名称重复")
             seen.add(identity)
-            option_id = new_id("opt")
+            option_id = explicit_id or new_id("opt")
+            if self.store.conn.execute(
+                    "SELECT 1 FROM custom_field_option WHERE id=?", (option_id,)).fetchone():
+                _reject("duplicate_option", "选项编号已存在")
             self.store.conn.execute(
                 """INSERT INTO custom_field_option(
                     id, shop_id, field_id, display_name, name_identity, enabled,

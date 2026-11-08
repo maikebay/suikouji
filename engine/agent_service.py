@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .agent_normalization import persist_structured, validate_structured
 from .custom_fields import CustomFieldError, CustomFieldStore
+from .name_rules import NameRuleError, NameRuleStore
 from .capabilities import product_capabilities
 from .importer import commit_import, plan_import
 from .model import month_range
@@ -75,7 +76,11 @@ class AgentService:
             "list_observations": {"method": "GET", "path": "/v1/observations"},
             "list_thoughts": {"method": "GET", "path": "/v1/thoughts"},
             "list_reviews": {"method": "GET", "path": "/v1/reviews"},
-            "apply_review": {"method": "POST", "path": "/v1/reviews", "confirmation": "required"},
+            "apply_review": {"method": "POST", "path": "/v1/reviews", "confirmation": "required",
+                             "scopes": ["once", "rule", "candidate"]},
+            "list_name_rules": {"method": "GET", "path": "/v1/name-rules"},
+            "upsert_name_rule": {"method": "POST", "path": "/v1/name-rules",
+                                 "scopes": ["confirmed", "candidate"]},
             "preview_import": {"method": "POST", "path": "/v1/imports/preview", "confirmation": "required"},
             "preview_xlsx": {"method": "POST", "path": "/v1/imports/xlsx-preview", "confirmation": "required"},
             "commit_xlsx": {"method": "POST", "path": "/v1/imports/xlsx-commit", "confirmation": "required"},
@@ -198,7 +203,13 @@ class AgentService:
     def _field_error(self, exc: CustomFieldError):
         status = 409 if exc.code in {"config_version_conflict", "preview_stale", "preview_consumed",
                                       "cursor_stale"} else 400
-        raise AgentError(exc.code, str(exc), status=status) from exc
+        raise AgentError(exc.code, str(exc), status=status, details=getattr(exc, "details", {}) or {}) from exc
+
+    def _rule_error(self, exc: NameRuleError):
+        raise AgentError(exc.code, str(exc), status=exc.status, details=exc.details) from exc
+
+    def _rules(self) -> NameRuleStore:
+        return NameRuleStore(self.store)
 
     def query_custom_field_records(self, principal: Principal, workspace_id: str, query: dict) -> dict:
         self.workspace(principal, workspace_id)
@@ -269,7 +280,8 @@ class AgentService:
                                        actor=actor, confirmation=confirmation)
         if action == "add_option":
             return fields.add_option(workspace_id, field_id, change.get("display_name"),
-                                     actor=actor, confirmation=confirmation)
+                                     actor=actor, confirmation=confirmation,
+                                     option_id=change.get("option_id"))
         if action == "alias":
             return fields.maintain_alias(
                 workspace_id, field_id, change.get("source_text"), change.get("target"),
@@ -369,7 +381,8 @@ class AgentService:
     def capture_text(self, principal: Principal, workspace_id: str, text: str,
                      request_id: str, *, source: str = "agent", received_at=None,
                      context=None, intent=None, profile_id=None, dedup_ref=None,
-                     peer=None, structured=None, custom_fields_version=None) -> dict:
+                     peer=None, structured=None, custom_fields_version=None,
+                     rules_version=None) -> dict:
         workspace = self.workspace(principal, workspace_id)
         request_id = self._request_id(request_id)
         text = self._text(text)
@@ -407,6 +420,10 @@ class AgentService:
             if type(custom_fields_version) is not int or custom_fields_version < 0:
                 raise AgentError("invalid_custom_fields_version", "字段配置版本必须是非负整数")
             payload["custom_fields_version"] = custom_fields_version
+        if rules_version is not None:
+            if type(rules_version) is not int or rules_version < 0:
+                raise AgentError("invalid_rules_version", "名称规则版本必须是非负整数")
+            payload["rules_version"] = rules_version
         # Claim, business projections, and the full response commit together.
         # Store's nested savepoints never publish an intermediate result.
         with self.store.transaction():
@@ -425,6 +442,7 @@ class AgentService:
             if profile_id is not None and profile_id != workspace["profile_id"]:
                 raise AgentError("profile_mismatch", "profile_id 与工作空间不一致")
             normalized = None
+            classification = None
             if structured is not None:
                 if workspace["profile_id"] != "restaurant":
                     raise AgentError("profile_unsupported", "当前结构化记账只支持 restaurant 工作空间")
@@ -432,6 +450,12 @@ class AgentService:
                     normalized = validate_structured(text, structured)
                 except (ValueError, TypeError, OverflowError) as exc:
                     raise AgentError("invalid_structured", str(exc)) from exc
+                try:
+                    entries, classification = self._rules().resolve_entries(
+                        workspace_id, normalized["entries"], rules_version=rules_version)
+                except NameRuleError as exc:
+                    self._rule_error(exc)
+                normalized = {**normalized, "entries": entries}
             existing_record = self.store.record_find(workspace_id, dedup_ref)
             if existing_record and (
                 existing_record.get("raw_text") != text
@@ -452,12 +476,15 @@ class AgentService:
                     code = ("request_in_progress" if existing_record["parse_status"] == "parsing"
                             else "recovery_needs_review")
                     raise AgentError(code, "已有原话但缺少结构化完整响应，请核对后再处理", status=409)
-                receipt = persist_structured(
-                    self.store, workspace_id, text, normalized, source=source, peer=peer,
-                    dedup_ref=dedup_ref, received_at=received_at, context=context,
-                    intent=intent, profile_id=workspace["profile_id"],
-                    custom_fields_version=custom_fields_version,
-                )
+                try:
+                    receipt = persist_structured(
+                        self.store, workspace_id, text, normalized, source=source, peer=peer,
+                        dedup_ref=dedup_ref, received_at=received_at, context=context,
+                        intent=intent, profile_id=workspace["profile_id"],
+                        custom_fields_version=custom_fields_version,
+                    )
+                except CustomFieldError as exc:
+                    self._field_error(exc)
             else:
                 try:
                     receipt = ingest(
@@ -496,6 +523,7 @@ class AgentService:
             }
             if normalized is not None:
                 result["normalization"] = receipt["normalization"]
+                result["classification"] = classification
                 if receipt.get("custom_fields", {}).get("written") or receipt.get("custom_fields", {}).get("missing_required"):
                     result["custom_fields"] = receipt["custom_fields"]
             parsed = result.get("parsed") or {}
@@ -657,17 +685,51 @@ class AgentService:
         self.workspace(principal, workspace_id)
         return review_items(self.store, workspace_id)
 
+    def list_name_rules(self, principal: Principal, workspace_id: str) -> dict:
+        self.workspace(principal, workspace_id)
+        return self._rules().list_rules(workspace_id)
+
+    def upsert_name_rule(self, principal: Principal, workspace_id: str,
+                         request_id: str, spec: dict) -> dict:
+        """显式 scope 才会写入规则。不根据原文里的「以后」等词推断。"""
+        self.workspace(principal, workspace_id)
+        request_id = self._request_id(request_id)
+        if not isinstance(spec, dict):
+            raise AgentError("invalid_rule", "名称规则必须是对象")
+        unknown = set(spec) - {"scope", "item", "type", "category", "bill_category",
+                               "enabled", "raw_text", "rules_version"}
+        if unknown:
+            raise AgentError("invalid_rule", "名称规则含有未允许的字段",
+                             details={"fields": sorted(unknown)})
+        payload = {"spec": spec}
+        with self.store.transaction():
+            cached, claim, _recovered = self._idempotent(
+                principal, workspace_id, "name_rule", request_id, payload)
+            if cached is not None:
+                return {**cached, "duplicate": True}
+            try:
+                result = self._rules().apply(
+                    workspace_id, spec, actor=principal.id, request_id=request_id)
+            except NameRuleError as exc:
+                self._rule_error(exc)
+            self._finish(claim, result)
+        return result
+
     def review(self, principal: Principal, workspace_id: str, request_id: str,
-               target_id: str, fields: dict, reason: str) -> dict:
+               target_id: str, fields: dict, reason: str, scope=None) -> dict:
         self.workspace(principal, workspace_id)
         if not isinstance(target_id, str) or ":" not in target_id:
             raise AgentError("invalid_target", "修正目标格式不正确")
+        if scope is not None and scope not in {"once", "rule", "candidate"}:
+            raise AgentError("invalid_scope", "修正范围只能是 once、rule 或 candidate")
         kind, row_id = target_id.split(":", 1)
         request_id = self._request_id(request_id)
+        idempotency = {"target_id": target_id, "fields": fields, "reason": reason}
+        if scope is not None:
+            idempotency["scope"] = scope
         with self.store.transaction():
             cached, claim, recovered = self._idempotent(
-                principal, workspace_id, "review", request_id,
-                {"target_id": target_id, "fields": fields, "reason": reason},
+                principal, workspace_id, "review", request_id, idempotency,
             )
             if cached is not None:
                 return {**cached, "duplicate": True}
@@ -679,17 +741,65 @@ class AgentService:
                 legacy_id = "agent-" + hashlib.sha256(
                     f"{principal.id}:{request_id}".encode("utf-8")
                 ).hexdigest()
-                if (self.store.record_find(workspace_id, f"review:{review_request_id}")
+                if scope in (None, "once") and (
+                        self.store.record_find(workspace_id, f"review:{review_request_id}")
                         or self.store.record_find(workspace_id, f"review:{legacy_id}")):
                     raise AgentError("recovery_needs_review", "旧修正已生效但缺少完整响应，请人工核对", status=409)
-                result = apply_review(self.store, workspace_id, review_request_id,
-                                      target_id, fields, reason)
+                if scope in (None, "once"):
+                    result = apply_review(self.store, workspace_id, review_request_id,
+                                          target_id, fields, reason)
+                else:
+                    result = self._review_rule(
+                        principal, workspace_id, request_id, target_id, row, fields, reason, scope)
                 self._finish(claim, result)
                 return result
             except AgentError:
                 raise
+            except NameRuleError as exc:
+                self._rule_error(exc)
             except ValueError as exc:
                 raise AgentError("invalid_review", str(exc)) from exc
+
+    def _review_rule(self, principal, workspace_id, request_id, target_id, row,
+                     fields, reason, scope):
+        """长期规则或候选只写规则表。不改这一行，也不改其他历史账。"""
+        if not target_id.startswith("entry:"):
+            raise AgentError("invalid_target", "名称规则只适用于账目")
+        if not isinstance(fields, dict):
+            raise AgentError("invalid_review", "修正内容格式不正确")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+            raise AgentError("invalid_review", "请填写 1 到 500 字的修正依据")
+        unknown = set(fields) - {"type", "category", "bill_category", "enabled"}
+        if unknown:
+            raise AgentError("invalid_review", "长期规则不能改金额或其他字段",
+                             details={"fields": sorted(unknown)})
+        item = row.get("item")
+        if not isinstance(item, str) or not item.strip():
+            raise AgentError("invalid_item", "这条账没有名称，不能建立名称规则")
+        spec = {
+            "scope": "confirmed" if scope == "rule" else "candidate",
+            "item": item,
+            "raw_text": reason,
+        }
+        for key in ("type", "category", "bill_category", "enabled"):
+            if key in fields:
+                spec[key] = fields[key]
+        try:
+            saved = self._rules().apply(
+                workspace_id, spec, actor=principal.id, request_id=request_id)
+        except NameRuleError as exc:
+            self._rule_error(exc)
+        return {
+            "duplicate": False,
+            "scope": scope,
+            "target_id": target_id,
+            "changed": {},
+            "entry_changed": False,
+            "rules_version": saved["rules_version"],
+            "rule": saved["rule"],
+            "audit": saved["audit"],
+            "unchanged": saved["unchanged"],
+        }
 
     @staticmethod
     def _csv(value) -> str:

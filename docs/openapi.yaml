@@ -13,6 +13,7 @@ info:
     旧版本孤立请求若已有业务结果而无完整响应，返回 409 recovery_needs_review 供人工核对。
     已完成请求仍校验 owner/workspace；后续 profile 变更或修正目标删除不阻止重放。
     JSON 请求体上限 32768 字节；CSV 本身最多 2000000 UTF-8 字节，HTTP 仍受请求体上限约束。
+    名称规则自 schema v9 起由服务端按工作空间保存。v8 及更早的库经显式副本迁移升级，不改写历史账目。
     0.2.0-staging 使用 schema v6，新增独立生意随想；随想不计入财务汇总、不产生任务或提醒。
     structured 的四个旧数组仍必填，thoughts 可省略；新结构化解析版本为 agent-structured-2。
     新回执包含 thoughts，历史完整缓存原样重放，可能没有该字段；客户端须兼容缺省。
@@ -237,6 +238,32 @@ paths:
         '403': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
+  /v1/name-rules:
+    get:
+      operationId: listNameRules
+      parameters: [{$ref: '#/components/parameters/WorkspaceId'}]
+      responses:
+        '200':
+          description: >-
+            Workspace name rules, rules_version, legal bill/ledger pairs, and recent audits.
+            Candidate and disabled rules are listed and are not applied on capture.
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: upsertNameRule
+      description: >-
+        Create or update one name rule. scope must be confirmed or candidate.
+        The server does not infer scope from words in raw_text. Confirmed rules do not
+        rewrite existing entries. Same request_id replays the stored result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NameRuleRequest'}
+      responses:
+        '200': {description: Rule write result, including rules_version and audit}
+        '400': {description: invalid_rule, invalid_option, illegal_classification, or classification_required}
+        '409': {description: rules_version_conflict or idempotency_conflict}
+        default: {$ref: '#/components/responses/Error'}
   /v1/imports/preview:
     post:
       operationId: previewImport
@@ -447,6 +474,12 @@ components:
         profile_id: {type: string, description: Must match the workspace profile}
         structured:
           $ref: '#/components/schemas/AgentStructuredCapture'
+        rules_version:
+          type: integer
+          minimum: 0
+          description: >-
+            Optional name-rule version from GET /v1/name-rules. Mismatch is 409 and writes nothing.
+            Omit it to use the version read inside the capture transaction.
       description: >-
         Preferred Agent flow: preserve text verbatim and supply structured data after
         interpreting messy speech. Missing structured retains the legacy rule parser.
@@ -657,7 +690,11 @@ components:
     AgentEntry:
       type: object
       additionalProperties: false
-      required: [date, type, category, amount, amount_basis, granularity, source_quote, assertion]
+      required: [date, amount, amount_basis, granularity, source_quote, assertion]
+      description: >-
+        type and category are both sent, or both omitted when item is present so a confirmed
+        name rule can fill type, category, and bill_category. A Chinese enum display name is
+        invalid_option (400), never an internal error.
       properties:
         date: {type: string, format: date, description: Canonical YYYY-MM-DD; never default an invalid date to today}
         type: {type: string, enum: [revenue, purchase, expense]}
@@ -665,6 +702,10 @@ components:
           type: string
           description: Revenue is 营业额; purchase is 食材成本; expense uses current controlled categories
           enum: [营业额, 食材成本, 房租, 人工, 水电, 平台佣金, 包装耗材, 推广, 维修, 税费, 其他支出]
+        bill_category:
+          type: string
+          maxLength: 80
+          description: Option id of cf_bill_category, such as opt_bill_wages. Not a display name.
         amount: {type: number, minimum: 0, maximum: 1000000000000}
         amount_basis: {type: string, enum: [gross, settlement]}
         granularity: {type: string, enum: [daily, transaction]}
@@ -766,6 +807,20 @@ components:
           type: string
           nullable: true
           description: New audit row id on first void; null when already voided or on replay without a new audit
+    NameRuleRequest:
+      type: object
+      required: [workspace_id, request_id, scope, item]
+      properties:
+        workspace_id: {type: string, minLength: 1}
+        request_id: {type: string, minLength: 1, maxLength: 100}
+        scope: {type: string, enum: [confirmed, candidate]}
+        item: {type: string, minLength: 1, maxLength: 100, description: Matched after NFC and stripping}
+        type: {type: string, enum: [revenue, purchase, expense]}
+        category: {type: string}
+        bill_category: {type: string, description: Option id, required when scope is confirmed}
+        enabled: {type: boolean, default: true}
+        raw_text: {type: string, maxLength: 2000}
+        rules_version: {type: integer, minimum: 0}
     ReviewRequest:
       type: object
       required: [workspace_id, request_id, target_id, fields, reason]
@@ -775,6 +830,12 @@ components:
         target_id: {type: string, description: 'entry:<id> or sale:<id>'}
         fields: {type: object}
         reason: {type: string, minLength: 1, maxLength: 500}
+        scope:
+          type: string
+          enum: [once, rule, candidate]
+          description: >-
+            Omitted or once changes only the target row. rule updates the confirmed name rule
+            and does not rewrite entries. candidate stores a non-applying suggestion.
     ImportPreviewRequest:
       type: object
       required: [workspace_id, csv]

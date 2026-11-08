@@ -15,9 +15,11 @@ import sqlite3
 
 from .model import (TYPE_EXPENSE, TYPE_PURCHASE, TYPE_REVENUE,
                     month_range, parse_date, today_iso)
+from .name_rules import NameRuleError, NameRuleStore, assert_ledger_pair
 
 ENTRY_FIELDS = {'date', 'type', 'category', 'amount', 'item', 'qty', 'unit',
                 'period_month', 'platform', 'channel', 'amount_basis', 'granularity'}
+ENTRY_EXTRA = {'bill_category'}
 SALE_FIELDS = {'date', 'product_name', 'qty', 'amount', 'platform', 'channel',
                'product_category', 'unit', 'amount_basis', 'granularity'}
 TYPES = (TYPE_REVENUE, TYPE_PURCHASE, TYPE_EXPENSE)
@@ -116,6 +118,7 @@ def apply_review(store, shop_id, request_id, target_id, fields, reason):
     clean = _validate(kind, fields)
     if not clean:
         raise ValueError('没有需要保存的修正')
+    bill_category = clean.pop('bill_category', None)
     dedup = f'review:{request_id}'
     # 去重要排在「内容是否相同」之前：响应丢了原样重发时，改的内容和库里已经一样，
     # 那不是「没改动」，是这次请求早就生效了，要按重复告诉用户，不能报错。
@@ -124,7 +127,18 @@ def apply_review(store, shop_id, request_id, target_id, fields, reason):
         return {'duplicate': True, 'record': existing, 'target_id': target_id, 'changed': {}}
     before = _editable(kind, original)
     changed = {k: v for k, v in clean.items() if before.get(k) != v}
-    if not changed:
+    current_bill = None
+    if kind == 'entry':
+        rules = NameRuleStore(store)
+        current_bill = rules.entry_bill(shop_id, row_id)
+        new_type = clean.get('type', original['type'])
+        new_category = clean.get('category', original['category'])
+        assert_ledger_pair(new_type, new_category)
+        new_bill = bill_category if bill_category is not None else current_bill
+        if new_bill is not None:
+            rules._assert_bill(shop_id, new_type, new_category, new_bill)
+    bill_changed = bill_category is not None and bill_category != current_bill
+    if not changed and not bill_changed:
         raise ValueError('修正后的内容与当前记录相同')
 
     source = store.record_for_origin(shop_id, target_id)
@@ -136,11 +150,23 @@ def apply_review(store, shop_id, request_id, target_id, fields, reason):
                 store.update_sale(row_id, **changed)
             # 留档要写库里真正落下的值：商品名会被别名归一成规范名，product_id 与
             # product_category 也跟着改写，按输入记下来的 after 在库里并不存在。
+            if bill_changed:
+                NameRuleStore(store).write_entry_bill(
+                    shop_id, row_id, bill_category,
+                    entry_type=clean.get('type', original['type']),
+                    category=clean.get('category', original['category']),
+                    source={'mode': 'review', 'request_id': request_id})
+                changed['bill_category'] = bill_category
             written = store.get_entry(row_id) if kind == 'entry' else store.get_sale(row_id)
-            after = {k: written.get(k) for k in changed}
+            after = {k: written.get(k) for k in changed if k != 'bill_category'}
+            if bill_changed:
+                after['bill_category'] = bill_category
             side = {k: {'before': original.get(k), 'after': written.get(k)}
                     for k in _SIDE_EFFECTS if original.get(k) != written.get(k)}
-            detail = json.dumps({'before': {k: before.get(k) for k in changed},
+            before_values = {k: before.get(k) for k in changed if k != 'bill_category'}
+            if bill_changed:
+                before_values['bill_category'] = current_bill
+            detail = json.dumps({'before': before_values,
                                  'after': after, 'side_effects': side,
                                  'source_record_id': source['id'] if source else None},
                                 ensure_ascii=False)
@@ -167,7 +193,7 @@ def apply_review(store, shop_id, request_id, target_id, fields, reason):
 def _validate(kind, fields):
     if not isinstance(fields, dict):
         raise ValueError('修正内容格式不正确')
-    allowed = ENTRY_FIELDS if kind == 'entry' else SALE_FIELDS
+    allowed = (ENTRY_FIELDS | ENTRY_EXTRA) if kind == 'entry' else SALE_FIELDS
     # 不能清空的列：entry.amount、sale.qty 是 NOT NULL。前端空输入框会映射成 null，
     # 写下去会撞完整性约束、变成一次 500，所以在入口就挡掉。
     required = {'amount'} if kind == 'entry' else {'qty'}
@@ -208,6 +234,10 @@ def _validate(kind, fields):
                 raise ValueError('费用归属月格式为 YYYY-MM')
             month_range(str(value))
             out[key] = str(value)
+        elif key == 'bill_category':
+            if kind != 'entry' or not isinstance(value, str) or not value.strip() or len(value) > 80:
+                raise ValueError('账单分类必须是选项编号')
+            out[key] = value.strip()
         elif key == 'type':
             if value not in TYPES:
                 raise ValueError('账目类型只能是收入、采购或支出')

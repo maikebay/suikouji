@@ -293,6 +293,8 @@ class DemoHandler(BaseHTTPRequestHandler):
             return self._send(200, {"observations": service.observations(principal, workspace, query.get("start"), query.get("end"), query.get("kind"), query.get("subject"), query.get("measure"))})
         if path == "/v1/reviews":
             return self._send(200, {"reviews": service.reviews(principal, workspace)})
+        if path == "/v1/name-rules":
+            return self._send(200, service.list_name_rules(principal, workspace))
         if path.startswith("/v1/captures/"):
             capture_id = path.rsplit("/", 1)[-1]
             return self._send(200, service.capture_detail(principal, workspace, capture_id))
@@ -315,7 +317,9 @@ class DemoHandler(BaseHTTPRequestHandler):
                                           profile_id=payload.get("profile_id"),
                                           **({"structured": payload["structured"]} if "structured" in payload else {}),
                                           **({"custom_fields_version": payload["custom_fields_version"]}
-                                             if "custom_fields_version" in payload else {}))
+                                             if "custom_fields_version" in payload else {}),
+                                          **({"rules_version": payload["rules_version"]}
+                                             if "rules_version" in payload else {}))
             return self._send(200, result)
         if not workspace:
             raise AgentError("workspace_required", "必须指定 workspace_id")
@@ -348,9 +352,16 @@ class DemoHandler(BaseHTTPRequestHandler):
                 principal, workspace, void_match.group(1),
                 payload.get("request_id"), reason=payload.get("reason"))
             return self._send(200, result)
+        if path == "/v1/name-rules":
+            spec = {key: payload[key] for key in (
+                "scope", "item", "type", "category", "bill_category", "enabled",
+                "raw_text", "rules_version") if key in payload}
+            return self._send(200, service.upsert_name_rule(
+                principal, workspace, payload.get("request_id"), spec))
         if path == "/v1/reviews":
             review = service.review(principal, workspace, payload.get("request_id"),
-                                    payload.get("target_id"), payload.get("fields"), payload.get("reason"))
+                                    payload.get("target_id"), payload.get("fields"), payload.get("reason"),
+                                    **({"scope": payload["scope"]} if "scope" in payload else {}))
             return self._send(200, {"review": review, "duplicate": review["duplicate"]})
         if path == "/v1/imports/preview":
             return self._send(200, service.preview_import(principal, workspace, payload.get("csv")))
@@ -385,6 +396,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             "/v1/custom-field-records/export": "POST",
             "/v1/custom-field-values/backfill": "POST",
             "/v1/reviews": "GET, POST",
+            "/v1/name-rules": "GET, POST",
             "/v1/imports/preview": "POST", "/v1/imports/xlsx-preview": "POST",
             "/v1/imports/xlsx-commit": "POST", "/v1/imports/commit": "POST",
         }.get(path)
