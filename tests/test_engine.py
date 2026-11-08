@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
 import io
 import json
 import os
@@ -592,10 +593,11 @@ class TestCliEndToEnd(TempDb):
 
     def test_import_then_commit(self):
         path = os.path.join(self.tmp.name, "sales.csv")
+        # 月报跟随当前月份，样例日期必须落在这个月里。
+        sale_day = _dt.date.today().replace(day=1).isoformat()
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write("日期,商品,数量,金额\n2026-10-01,牛肉面,30,360\n")
+            fh.write(f"日期,商品,数量,金额\n{sale_day},牛肉面,30,360\n")
 
-        # 表里的日期是 10-01，报表要按整月看才盖得住
         month = ("report", "product", "--period", "month")
         preview = run_cli(*self._args("import", path))
         self.assertIn("销售明细", preview)

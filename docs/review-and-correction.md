@@ -84,6 +84,18 @@ Schema 版本 3 → 4，只新增两列和一个索引，旧库用 `ALTER TABLE`
 
 返回 `{review: {duplicate, record, target_id, changed, history}, state}`。`/api/records` 的响应新增 `written`（这次实际写入的 entry/sale 行），结果卡据此渲染。`/api/state` 新增 `review`（待核对清单，含 `missing` 字段名与 `history`）。
 
+## Agent API 的一次修正和长期规则
+
+网页修正仍然只改当前这一行。认证 API `POST /v1/reviews` 用显式 `scope` 区分，不根据依据里的「以后」「一直」做判断：
+
+| scope | 效果 |
+| --- | --- |
+| 省略或 `once` | 和上面的网页修正一样，只改 `target_id` 那一行 |
+| `rule` | 把该账目名称的已确认规则改成这次给出的类型、分类和账单分类；`rules_version` 加一；已经记下的账（含这一行）不改 |
+| `candidate` | 只保存一条不生效的候选。不改账，之后记账也不套用 |
+
+名称规则的读取和直接确认见 `GET/POST /v1/name-rules`，说明在[Agent 能力契约](agent-capabilities.md)。账目分类和账单分类的组合必须是服务端列出的合法配对；中文显示名和未知选项返回 400，而不是 500。
+
 ## 边界
 
 - 没有「撤销修正」和「删除账目」的界面；改错了只能再改一次，两次都会留在历史里。

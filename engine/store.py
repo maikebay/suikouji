@@ -29,8 +29,8 @@ from .model import (
     round2,
 )
 
-SCHEMA_VERSION = 8
-HISTORICAL_SCHEMA_VERSIONS = (5, 6, 7)
+SCHEMA_VERSION = 9
+HISTORICAL_SCHEMA_VERSIONS = (5, 6, 7, 8)
 
 # Execute these statements inside the caller's transaction: executescript would
 # commit it before applying DDL, breaking copy migration and rollback guarantees.
@@ -328,6 +328,61 @@ def _create_custom_field_schema(conn):
     for statement in _CUSTOM_FIELD_SCHEMA:
         conn.execute(statement)
 
+
+# Name rules are workspace data. A rule change must not rewrite ledger rows.
+_NAME_RULE_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS name_rule_config (
+        shop_id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL CHECK(version >= 0),
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS name_rule (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        item_text TEXT NOT NULL,
+        item_identity TEXT NOT NULL,
+        entry_type TEXT,
+        category TEXT,
+        bill_category TEXT,
+        state TEXT NOT NULL CHECK(state IN ('confirmed', 'candidate')),
+        enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(shop_id, id),
+        UNIQUE(shop_id, item_identity, state),
+        CHECK(entry_type IS NULL OR entry_type IN ('revenue', 'purchase', 'expense')),
+        CHECK(state != 'confirmed' OR (
+            entry_type IS NOT NULL AND category IS NOT NULL AND bill_category IS NOT NULL
+        )),
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_name_rule_lookup
+       ON name_rule(shop_id, item_identity, state, enabled)""",
+    """CREATE TABLE IF NOT EXISTS name_rule_audit (
+        id TEXT PRIMARY KEY,
+        shop_id TEXT NOT NULL,
+        rule_id TEXT,
+        action TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        request_id TEXT,
+        raw_text TEXT,
+        before_json TEXT,
+        after_json TEXT NOT NULL,
+        rules_version INTEGER NOT NULL CHECK(rules_version >= 1),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_name_rule_audit
+       ON name_rule_audit(shop_id, rule_id, created_at, id)""",
+)
+
+
+def _create_name_rule_schema(conn):
+    for statement in _NAME_RULE_SCHEMA:
+        conn.execute(statement)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -607,6 +662,14 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
         required["entry_void_audit"] = (
             "id, shop_id, entry_id, actor, reason, before_json, created_at"
         )
+    if expected_version >= 9:
+        required.update({
+            "name_rule_config": "shop_id, version, updated_at",
+            "name_rule": "id, shop_id, item_text, item_identity, entry_type, category, "
+                         "bill_category, state, enabled, revision, created_at, updated_at",
+            "name_rule_audit": "id, shop_id, rule_id, action, actor, request_id, raw_text, "
+                               "before_json, after_json, rules_version, created_at",
+        })
     try:
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if not version or version[0] != str(expected_version):
@@ -635,6 +698,9 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                 })
             if expected_version >= 8:
                 indexes["idx_entry_void_audit"] = ("shop_id", "entry_id", "created_at", "id")
+            if expected_version >= 9:
+                indexes["idx_name_rule_lookup"] = ("shop_id", "item_identity", "state", "enabled")
+                indexes["idx_name_rule_audit"] = ("shop_id", "rule_id", "created_at", "id")
             for name, columns in indexes.items():
                 if tuple(row[2] for row in conn.execute(f"PRAGMA index_info({name})")) != columns:
                     return False
@@ -657,6 +723,11 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                     "custom_field_config": {("shop_id",)},
                     "custom_field_alias": {("id",), ("shop_id", "field_id", "source_identity")},
                     "custom_import_mapping": {("id",), ("shop_id", "header_identity")},
+                })
+            if expected_version >= 9:
+                unique_keys.update({
+                    "name_rule_config": {("shop_id",)},
+                    "name_rule": {("id",), ("shop_id", "id"), ("shop_id", "item_identity", "state")},
                 })
             for table, expected in unique_keys.items():
                 actual = set()
@@ -706,6 +777,12 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                     (("shop", "shop_id", "id"),),
                     (("entry", "shop_id", "shop_id"), ("entry", "entry_id", "id")),
                 }
+            if expected_version >= 9:
+                foreign_keys.update({
+                    "name_rule_config": {(("shop", "shop_id", "id"),)},
+                    "name_rule": {(("shop", "shop_id", "id"),)},
+                    "name_rule_audit": {(("shop", "shop_id", "id"),)},
+                })
             for table, expected in foreign_keys.items():
                 groups = {}
                 for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
@@ -761,7 +838,16 @@ def _apply_v8(conn):
     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='entry_void_audit'").fetchone():
         raise ValueError("v7 数据库已有账目作废审计表，请核对迁移状态")
     _apply_void_entry_columns(conn)
-    conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
+    conn.execute("UPDATE meta SET value='8' WHERE key='schema_version'")
+
+
+def _apply_v9(conn):
+    names = ("name_rule", "name_rule_config", "name_rule_audit")
+    if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name IN (?,?,?)", names).fetchone():
+        raise ValueError("v8 数据库已有名称规则表，请核对迁移状态")
+    _create_name_rule_schema(conn)
+    conn.execute("UPDATE meta SET value='9' WHERE key='schema_version'")
 
 
 def migrate_v5_to_v6(conn):
@@ -776,7 +862,12 @@ def migrate_v6_to_v7(conn):
 
 def migrate_v7_to_v8(conn):
     """为已校验的 v7 副本增加账目软作废字段与审计表。"""
-    _migrate_in_savepoint(conn, "void_entry_v8", 7, _apply_v8, SCHEMA_VERSION)
+    _migrate_in_savepoint(conn, "void_entry_v8", 7, _apply_v8, 8)
+
+
+def migrate_v8_to_v9(conn):
+    """为已校验的 v8 副本增加名称规则表。不改已有账目。"""
+    _migrate_in_savepoint(conn, "name_rules_v9", 8, _apply_v9, 9)
 
 
 def migrate_to_current(conn):
@@ -793,6 +884,9 @@ def migrate_to_current(conn):
         current = 7
     if current == 7:
         migrate_v7_to_v8(conn)
+        current = 8
+    if current == 8:
+        migrate_v8_to_v9(conn)
         return
     if current == SCHEMA_VERSION and database_schema_ready(conn):
         return
@@ -1092,7 +1186,10 @@ class SqliteStore(Store):
                 migrate_to_current(self.conn)
                 return
             if database_schema_ready(self.conn, expected_version=7):
-                migrate_v7_to_v8(self.conn)
+                migrate_to_current(self.conn)
+                return
+            if database_schema_ready(self.conn, expected_version=8):
+                migrate_to_current(self.conn)
                 return
             existing_meta = self.conn.execute("SELECT name FROM sqlite_master WHERE name='meta'").fetchone()
             if existing_meta:
@@ -1178,6 +1275,7 @@ class SqliteStore(Store):
             _create_thought_schema(self.conn)
             _create_custom_field_schema(self.conn)
             _apply_void_entry_columns(self.conn)
+            _create_name_rule_schema(self.conn)
 
     def close(self) -> None:
         self.conn.close()
@@ -2429,7 +2527,8 @@ class SqliteStore(Store):
                   'custom_observation_value', 'custom_thought_value', 'custom_field_gap',
                   'custom_field_suggestion', 'custom_field_preview',
                   'custom_field_alias', 'custom_import_mapping',
-                  'entry_void_audit']
+                  'entry_void_audit',
+                  'name_rule_config', 'name_rule', 'name_rule_audit']
         out = {"schema_version": SCHEMA_VERSION, "shop_id": shop_id, "tables": {}}
         for t in tables:
             if t == "shop":

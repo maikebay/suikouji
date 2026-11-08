@@ -191,6 +191,68 @@ Agent 整理时应当：
 - 默认 `GET /v1/entries`、`/v1/summary`、报表与 timeline 账目预览不再计入已作废行；`GET /v1/captures/{id}` 详情仍可见并带作废字段。
 - 金额纠错优先用修正接口；作废用于整笔错误或重复入账。
 
+## 名称规则（服务端归类）
+
+能力项 `classification.rules` 为 `available` 时，分类规则属于工作空间，不属于某个对话或某个 Agent。新 Agent 没有聊天记录也能用：先读 `GET /v1/capabilities` 的 `agent_policy.input_preparation.classification`，再读 `GET /v1/name-rules`。不要扫描 `GET /v1/entries` 来猜名称归类，本版也不使用历史频率或模型猜测。
+
+匹配键是账目 `item` 的 Unicode NFC，再去掉首尾空白，区分大小写，必须整段相等。`老唐` 与 ` 老唐 ` 是同一条规则，`老 唐` 不是。
+
+优先级，高的先用：
+
+1. 这一条账上写明的 `type`、`category` 或 `bill_category`。
+2. 只改这一条的修正（`POST /v1/reviews` 省略 `scope`，或 `scope` 为 `once`）。
+3. 该名称上已启用的 `confirmed` 规则。
+4. 向用户询问。没有规则就不能入账。
+
+`candidate` 和已停用规则不套用，也不拦截其他账。停用用 `enabled: false`，没有删除接口。改规则不回写已经记下的账。
+
+`rules_version` 按工作空间单独计数，和 `custom_fields_version` 不是同一个数。它只是缓存失效信号。省略它时，服务端在这笔写入的事务里读取当前规则。传了旧版本则返回 `409 rules_version_conflict`，并且不写账、不写规则。同一次 `request_id` 配同一份请求体的重放返回已保存的回执，`duplicate: true`，不会再插入一条。
+
+账单分类是自定义枚举字段，键固定为 `cf_bill_category`。值必须是选项编号（`opt_bill_wages` 这类），不能写中文显示名。合法组合在能力接口和 `GET /v1/name-rules` 的 `legal_pairs` 里。非法组合是 `400 illegal_classification`。中文显示名或未知编号是 `400 invalid_option`。这两种都不是 500。
+
+### 确认长期规则
+
+用户明确说以后都这样记时，调用：
+
+`POST /v1/name-rules`
+
+```json
+{
+  "workspace_id": "shop-a",
+  "request_id": "rule-laotang-wages",
+  "scope": "confirmed",
+  "item": "老唐",
+  "type": "expense",
+  "category": "人工",
+  "bill_category": "opt_bill_wages"
+}
+```
+
+`scope` 只能是 `confirmed` 或 `candidate`。原文里出现「以后」「一直」不会自动变成规则。
+
+### 有规则时怎么记账
+
+`老唐 360` 在规则已确认后，结构化账目省略 `type`、`category` 和 `bill_category`，仍要给出日期、名称、金额、口径、粒度和逐字 `source_quote`。成功标准：
+
+- HTTP 200，且 `entries` 里这一条是支出、分类「人工」、金额 360、名称「老唐」。
+- `classification.entries[0].source` 为 `confirmed_rule`，并带有 `rule_id` 和当时的 `rules_version`。
+- 该账的 `cf_bill_category` 写成 `opt_bill_wages`。
+- 不要再问用户这笔属于哪一类。
+
+没有已确认规则又省略了分类时，HTTP 400，`error.code` 为 `classification_required`。把 `details.ask` 问给用户。不要猜，也不要改用新请求去扫历史。
+
+某一条想记成别的类时，在这一条上写明 `type` 和 `category`。这一条按显式值入账，规则行不变。`classification.entries[0].overrode_rule` 为 true。
+
+### 改一次，还是以后都这样
+
+| 用户的意思 | 调用 | 结果 |
+| --- | --- | --- |
+| 只改这一笔 | `POST /v1/reviews`，不传 `scope` 或 `scope: "once"` | 只改 `target_id` 那一行 |
+| 以后这个名称都这样记 | `scope: "rule"`，或直接 `POST /v1/name-rules` 且 `scope: "confirmed"` | 更新已确认规则，`rules_version` 加一，已有账不变 |
+| 听不清是只改一次还是以后都这样 | `scope: "candidate"` | 记一条候选；原账不动；之后入账既不套用它，也不被它挡住 |
+
+修正依据仍然要写。依据里的「以后」本身不改变范围。
+
 ## 必须遵守
 
 - 能力状态为 `available` 才能直接使用；`planned` 只能向用户说明尚未实现，不能伪装成已执行；`unsupported` 必须明确告知边界。
@@ -202,7 +264,7 @@ Agent 整理时应当：
 
 ## 当前基础
 
-schema v8（自 v7 起含自定义字段，v8 增加账目软作废字段与审计表）在 v6 基础上保留 `record` 原话、`entry`/`sale`/`observation` 投影和旧 `shop_id` 兼容，新增独立 `thoughts` 和可索引 `thought_tags`；随想经自己的 `capture_id` 关联来源，不向 `ledger_refs` 塞入 `thought:`。公开字段使用 `workspace_id`。profile 作为工作空间元数据和模块边界，REST 和 iLink Bot 共用 `AgentService`，工作空间必须属于服务端配置的 owner。
+schema v9 在 v8 账目软作废之上增加工作空间名称规则；v7 起含自定义字段，v6 起含独立 `thoughts` 和可索引 `thought_tags`。名称规则表与已有账目分开，迁移不改历史金额和分类。公开字段使用 `workspace_id`。profile 作为工作空间元数据和模块边界，REST 和 iLink Bot 共用 `AgentService`，工作空间必须属于服务端配置的 owner。
 
 ## 写入与重试
 

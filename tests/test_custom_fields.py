@@ -134,7 +134,8 @@ class CustomFieldDefinitionTests(unittest.TestCase):
                              "custom_field_audit", "custom_entry_value", "custom_sale_value",
                              "custom_observation_value", "custom_thought_value", "custom_field_gap",
                              "custom_field_suggestion", "custom_field_preview",
-                             "custom_field_alias", "custom_import_mapping", "entry_void_audit"):
+                             "custom_field_alias", "custom_import_mapping", "entry_void_audit",
+                             "name_rule", "name_rule_config", "name_rule_audit"):
                     store.conn.execute(f"DROP TABLE IF EXISTS {name}")
                 for name in ("idx_entry_workspace_id", "idx_sale_workspace_id",
                              "idx_observation_workspace_id", "idx_entry_void_audit",

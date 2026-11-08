@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from .name_rules import BILL_FIELD_KEY, legal_pairs
 from .profile import list_profiles
 
 
@@ -84,9 +85,24 @@ _CAPABILITIES = (
         "ledger.correction",
         "available",
         "补充或修正已有账目，并保留修正原话、依据和前后值",
-        "target + changed_fields + reason",
-        "必须确认目标行和修正含义",
-        ("修正写回原业务行，不新增重复账目",),
+        "target + changed_fields + reason + scope(once|rule|candidate，可省略且省略等于 once)",
+        "必须确认目标行和修正含义；范围只能来自显式 scope，不能从「以后」等词推断",
+        ("scope 省略或 once：只改这一行，不建立名称规则",
+         "scope=rule：只更新该名称的已确认长期规则并提升 rules_version，不改历史账",
+         "scope=candidate：只记录候选，不改这一行，之后入账也不套用",),
+    ),
+    Capability(
+        "classification.rules",
+        "available",
+        "按工作空间保存名称到账目类型、分类和账单分类的规则，并在省略分类时套用已确认规则",
+        "GET /v1/name-rules；POST /v1/name-rules 需 scope=confirmed 或 candidate",
+        "确认长期规则必须显式 scope=confirmed；候选 scope=candidate 从不套用",
+        ("匹配键是名称的 NFC 加去首尾空白，区分大小写，精确相等",
+         "优先级：本条显式值 > 只改这一条的修正 > 已启用的已确认规则 > 向用户询问",
+         "历史频率和模型猜测不在本版，不能代替规则",
+         "规则变更不回写已有账；停用用 enabled=false，不删除",
+         "rules_version 与 custom_fields_version 分开；客户端缓存不能当成权威",
+         "同 request_id 重放不产生第二条规则或账目"),
     ),
     Capability(
         "ledger.void",
@@ -190,13 +206,19 @@ def _structured_schema() -> dict:
                 "required": required, "properties": properties, "description": description}
 
     entry = row(
-        ["date", "type", "category", "amount", "amount_basis", "granularity", "source_quote", "assertion"],
+        ["date", "amount", "amount_basis", "granularity", "source_quote", "assertion"],
         {**common, **financial, "type": {"type": "string", "enum": ["revenue", "purchase", "expense"]},
          "category": {"type": "string", "enum": ["营业额", "食材成本", "房租", "人工", "水电", "平台佣金",
                                                    "包装耗材", "推广", "维修", "税费", "其他支出"]},
+         "bill_category": {"type": "string", "minLength": 1, "maxLength": 80,
+                           "description": "cf_bill_category 的选项编号，例如 opt_bill_wages。不要填中文显示名。"},
          "amount": number, "item": text, "qty": number, "unit": text,
          "period_month": {"type": "string", "pattern": r"^[0-9]{4}-[0-9]{2}$"},
-         "platform": text, "channel": text},
+         "platform": text, "channel": text,
+         "custom_fields": {"type": "array", "maxItems": 20}},
+        "type 与 category 同时提供，或在有 item 时同时省略。"
+        "已确认名称规则会补上省略的类型、分类和 bill_category；显式值只覆盖这一条，不改规则。"
+        "没有规则又省略分类时返回 classification_required，必须询问用户，不要猜测。"
         "收入分类营业额，采购分类食材成本，其余分类限费用。采购qty/unit成对提供，未知均省略；"
         "period_month仅用于费用归属月。gross为流水总额，settlement为结算实收，不能混加。")
     sale = row(
@@ -285,6 +307,60 @@ def _structured_example() -> dict:
     }
 
 
+def _classification_policy() -> dict:
+    return {
+        "server_owned": True,
+        "history_or_ai_in_mvp": False,
+        "keyword_matching": False,
+        "bill_field_key": BILL_FIELD_KEY,
+        "read": {"method": "GET", "path": "/v1/name-rules"},
+        "write": {"method": "POST", "path": "/v1/name-rules",
+                  "scopes": ["confirmed", "candidate"]},
+        "correct": {"method": "POST", "path": "/v1/reviews",
+                    "scopes": {"omitted_or_once": "change only this entry",
+                               "rule": "update confirmed rule, do not rewrite entries",
+                               "candidate": "store a candidate, do not apply it"}},
+        "priority": [
+            "explicit type, category, or bill_category on this entry",
+            "one-off correction of this entry",
+            "enabled confirmed rule for the normalized item",
+            "ask the user",
+        ],
+        "not_applied": ["candidate", "disabled rule", "historical frequency", "model guess"],
+        "item_match": "Unicode NFC, strip ends, case-sensitive, exact",
+        "rules_version": "Separate from custom_fields_version. Optional on capture and rule writes. "
+                         "A mismatch is 409 rules_version_conflict and writes nothing. "
+                         "Omitting it uses the version read in that write transaction. "
+                         "Do not keep a process cache as the authority.",
+        "capture_when_rule_matches": "Omit type, category, and bill_category. Still send date, item, "
+                                     "amount, amount_basis, granularity, source_quote, and assertion. "
+                                     "Success is HTTP 200, classification.entries[].source=confirmed_rule, "
+                                     "and the saved entry uses the rule. Do not ask.",
+        "capture_when_missing": "HTTP 400 classification_required. Ask the user for type, ledger category, "
+                                "and bill category. Do not guess and do not scan entry history.",
+        "explicit_override": "Values sent on one entry win for that entry only. The rule row is unchanged.",
+        "invalid_values": "A Chinese display name or unknown option is HTTP 400 invalid_option. "
+                          "An illegal type/category/bill_category triple is HTTP 400 illegal_classification. "
+                          "These are never HTTP 500.",
+        "idempotency": "Replay the same request_id and body. That does not create a second rule or entry.",
+        "sharing": "Rules belong to the workspace, survive restarts, and are visible to every agent of that workspace.",
+        "legal_pairs": legal_pairs(),
+        "example_confirm": {
+            "method": "POST", "path": "/v1/name-rules",
+            "body": {"workspace_id": "replace-with-authorized-workspace-id",
+                     "request_id": "rule-laotang-wages", "scope": "confirmed",
+                     "item": "老唐", "type": "expense", "category": "人工",
+                     "bill_category": "opt_bill_wages"},
+        },
+        "example_capture": {
+            "text": "老唐 360",
+            "structured_entry_omits": ["type", "category", "bill_category"],
+            "expect": {"type": "expense", "category": "人工", "bill_category": "opt_bill_wages",
+                       "source": "confirmed_rule"},
+        },
+    }
+
+
 def product_capabilities() -> dict:
     """返回可直接提供给 Agent 的 JSON 兼容能力说明。"""
     return {
@@ -299,6 +375,7 @@ def product_capabilities() -> dict:
             "ask_before_ambiguous_financial_write": True,
             "never_guess": [
                 "工作空间或行业 profile",
+                "没有已确认名称规则时的账目类型、分类和账单分类",
                 "实际发生、计划、预算、报价之间的区别",
                 "收入、采购、费用、销量的金额归属",
                 "付款日期与费用归属月份",
@@ -318,6 +395,7 @@ def product_capabilities() -> dict:
                 "separate_actual_from_forecast_and_opinion": True,
                 "require_source_quote": True,
                 "ask_only_when_information_missing_or_conflicting": True,
+                "classification": _classification_policy(),
                 "custom_field_policy": {
                     "recognized_new_attribute": "create_field_directly",
                     "user_confirmation": False,

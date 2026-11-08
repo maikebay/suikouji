@@ -11,7 +11,7 @@ import datetime as dt
 import math
 import re
 
-from .custom_fields import CustomFieldError, CustomFieldStore
+from .custom_fields import CustomFieldStore
 from .observe import RECORD_TYPES, dedup_keys, normalize
 from .thoughts import validate_thought
 
@@ -24,13 +24,16 @@ MAX_QUOTE = 2000
 SECTIONS = {"entries", "sales", "observations", "leftovers"}
 COMMON = {"date", "source_quote", "assertion"}
 FINANCIAL = {"amount_basis", "granularity"}
-ENTRY_REQUIRED = COMMON | FINANCIAL | {"type", "category", "amount"}
-ENTRY_OPTIONAL = {"item", "qty", "unit", "period_month", "platform", "channel", "custom_fields"}
+ENTRY_REQUIRED = COMMON | FINANCIAL | {"amount"}
+ENTRY_OPTIONAL = {"item", "qty", "unit", "period_month", "platform", "channel", "custom_fields",
+                  "type", "category", "bill_category"}
 SALE_REQUIRED = COMMON | FINANCIAL | {"product_name", "qty", "amount", "unit"}
 SALE_OPTIONAL = {"platform", "channel", "product_category", "custom_fields"}
 OBS_REQUIRED = COMMON | {"kind", "measure"}
 OBS_OPTIONAL = {"value_num", "value_text", "unit", "subject", "custom_fields"}
 EXPENSE_CATEGORIES = {"房租", "人工", "水电", "平台佣金", "包装耗材", "推广", "维修", "税费", "其他支出"}
+CATEGORY_TYPE = {"营业额": "revenue", "食材成本": "purchase",
+                 **{category: "expense" for category in EXPENSE_CATEGORIES}}
 WEATHER = {"阴", "晴", "雨", "多云", "雪"}
 ATTENDANCE = {"请假", "请了假", "缺勤", "迟到", "早退", "休息", "上班", "到岗"}
 
@@ -120,21 +123,28 @@ def _entry(row, raw_text, label):
     _custom_fields({**row, "_raw_text": raw_text}, label)
     _common(row, raw_text, label)
     _financial(row, label)
-    _choice(row["type"], {"revenue", "purchase", "expense"}, f"{label}.type")
-    _text(row["category"], f"{label}.category")
-    categories = ({"营业额"} if row["type"] == "revenue" else {"食材成本"}
-                  if row["type"] == "purchase" else EXPENSE_CATEGORIES)
-    _choice(row["category"], categories, f"{label}.category")
+    has_type, has_category = "type" in row, "category" in row
+    if has_type != has_category:
+        raise ValueError(f"{label} 的 type 和 category 必须同时提供或同时省略")
+    if not has_type and "item" not in row:
+        raise ValueError(f"{label} 省略类型和分类时必须提供 item，以便按名称规则归类")
+    if has_type:
+        _choice(row["type"], {"revenue", "purchase", "expense"}, f"{label}.type")
+        _text(row["category"], f"{label}.category")
+        if row["category"] not in CATEGORY_TYPE or CATEGORY_TYPE[row["category"]] != row["type"]:
+            raise ValueError(f"{label}.category 不在允许范围内")
+    if "bill_category" in row:
+        _text(row["bill_category"], f"{label}.bill_category", 80)
     _number(row["amount"], f"{label}.amount")
     _optional_text(row, {"item", "unit", "platform", "channel"}, label)
     if ("qty" in row) != ("unit" in row):
         raise ValueError(f"{label}.qty 和 unit 必须一起提供，未知时都不提供")
     if "qty" in row:
-        if row["type"] != "purchase":
+        if row.get("type") != "purchase":
             raise ValueError(f"{label}.qty 和 unit 仅用于采购数量，商品销量请放入 sales")
         _number(row["qty"], f"{label}.qty")
     if "period_month" in row:
-        if row["type"] != "expense":
+        if row.get("type") != "expense":
             raise ValueError(f"{label}.period_month 仅用于费用归属月")
         period = row["period_month"]
         if not isinstance(period, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}", period):
@@ -239,13 +249,10 @@ def _attach_custom_fields(store, shop_id, record_type, target_id, row, raw_text,
         "entry_types": row.get("type"), "categories": row.get("category"),
         "product_categories": row.get("product_category"), "kinds": row.get("kind"),
     }
-    try:
-        return CustomFieldStore(store).write_values(
-            shop_id, record_type, target_id, row.get("custom_fields", []),
-            attributes=attributes, config_version=config_version,
-            source={"raw_text": raw_text, "mode": "capture"})
-    except CustomFieldError as exc:
-        raise ValueError(exc.args[0]) from exc
+    return CustomFieldStore(store).write_values(
+        shop_id, record_type, target_id, row.get("custom_fields", []),
+        attributes=attributes, config_version=config_version,
+        source={"raw_text": raw_text, "mode": "capture"})
 
 
 def persist_structured(store, shop_id, raw_text, normalized, *, source="agent", peer=None,
