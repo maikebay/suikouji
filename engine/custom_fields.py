@@ -47,6 +47,9 @@ _SCOPE_CONDITIONS = {
     "observation": ("kinds",),
     "thought": (),
 }
+# 生产账单字段的 id 是 cf_bill_category，key 是 bill_category。两种都算账单分类。
+BILL_FIELD_IDS = ("cf_bill_category",)
+BILL_FIELD_KEYS = ("bill_category", "cf_bill_category")
 _VALUE_TABLES = {
     "entry": "custom_entry_value",
     "sale": "custom_sale_value",
@@ -63,6 +66,14 @@ class CustomFieldError(ValueError):
 
 def _reject(code: str, message: str):
     raise CustomFieldError(code, message)
+
+
+def is_bill_category_field(field) -> bool:
+    """账单分类覆盖全部账目，不因字段上的分类过滤拒绝进货或费用。"""
+    if not isinstance(field, dict):
+        return False
+    return (field.get("field_id") in BILL_FIELD_IDS or field.get("id") in BILL_FIELD_IDS
+            or field.get("key") in BILL_FIELD_KEYS)
 
 
 def _text(value, *, minimum: int, maximum: int, label: str,
@@ -455,7 +466,8 @@ class CustomFieldStore:
             if not field["enabled"]:
                 _reject("field_disabled", "停用字段不能写入新记录")
             if not scope_matches(field["scopes"], record_type, attributes):
-                _reject("scope_mismatch", "字段不适用于这条记录")
+                if not (record_type == "entry" and is_bill_category_field(field)):
+                    _reject("scope_mismatch", "字段不适用于这条记录")
             accepted.append(self._typed_value(field, item))
         return accepted
 

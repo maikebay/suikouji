@@ -94,7 +94,7 @@ Schema 版本 3 → 4，只新增两列和一个索引，旧库用 `ALTER TABLE`
 | `rule` | 把该账目名称的已确认规则改成这次给出的类型、分类和账单分类；`rules_version` 加一；已经记下的账（含这一行）不改 |
 | `candidate` | 只保存一条不生效的候选。不改账，之后记账也不套用 |
 
-名称规则的读取和直接确认见 `GET/POST /v1/name-rules`，说明在[Agent 能力契约](agent-capabilities.md)。账目分类和账单分类的组合必须是服务端列出的合法配对；中文显示名和未知选项返回 400，而不是 500。
+名称规则的读取和直接确认见 `GET/POST /v1/name-rules`，说明在[Agent 能力契约](agent-capabilities.md)。账单字段按 `field_id=cf_bill_category` 或 `key=bill_category` 识别。启用中的选项可以和任何合法的账目类型/分类一起写；不要求一份全局选项表里才有的编号。中文显示名和未知选项返回 400，而不是 500。
 
 ## 边界
 

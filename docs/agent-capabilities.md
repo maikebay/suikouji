@@ -208,7 +208,7 @@ Agent 整理时应当：
 
 `rules_version` 按工作空间单独计数，和 `custom_fields_version` 不是同一个数。它只是缓存失效信号。省略它时，服务端在这笔写入的事务里读取当前规则。传了旧版本则返回 `409 rules_version_conflict`，并且不写账、不写规则。同一次 `request_id` 配同一份请求体的重放返回已保存的回执，`duplicate: true`，不会再插入一条。
 
-账单分类是自定义枚举字段，键固定为 `cf_bill_category`。值必须是选项编号（`opt_bill_wages` 这类），不能写中文显示名。合法组合在能力接口和 `GET /v1/name-rules` 的 `legal_pairs` 里。非法组合是 `400 illegal_classification`。中文显示名或未知编号是 `400 invalid_option`。这两种都不是 500。
+账单分类是工作空间里的那个枚举字段：`field_id` 为 `cf_bill_category`，或 `key` 为 `bill_category` / `cf_bill_category`。用字段上真实的选项编号，不能写中文显示名，也不要假设存在 `opt_bill_ingredients` 这类未安装的编号。`GET /v1/name-rules` 的 `legal_pairs` 只列出已安装选项，以及这些选项在已保存账上出现过的账目分类；它不回写旧账。调用方写明的合法账目类型/分类，可以和任一启用选项组合。中文显示名或未知编号是 `400 invalid_option`。账目类型和分类对不上是 `400 illegal_classification`。这两种都不是 500。只给了账单选项、又省略类型和分类时，仅当该选项在已保存账上只对应一种分类才会补上；否则返回 `classification_required`，不要猜。
 
 ### 确认长期规则
 

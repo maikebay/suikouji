@@ -1,6 +1,7 @@
 """Server-owned name → category rules. A fresh agent needs no chat history."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import threading
@@ -200,12 +201,20 @@ class NameRuleTests(unittest.TestCase):
         self.assertEqual(named.exception.code, "invalid_option")
         with self.assertRaises(AgentError) as illegal:
             self.service.upsert_name_rule(P, "shop", "bad-pair", {
-                "scope": "confirmed", "item": "滤网", "type": "purchase", "category": "食材成本",
+                "scope": "confirmed", "item": "滤网", "type": "expense", "category": "营业额",
                 "bill_category": "opt_bill_wages",
             })
         self.assertEqual(illegal.exception.code, "illegal_classification")
-        self.assertIsNone(next((rule for rule in self.service.list_name_rules(P, "shop")["rules"]
-                                if rule["item"] == "滤网"), None))
+        allowed = self.service.upsert_name_rule(P, "shop", "purchase-with-wages-option", {
+            "scope": "confirmed", "item": "滤网", "type": "purchase", "category": "食材成本",
+            "bill_category": "opt_bill_wages",
+        })
+        self.assertEqual(allowed["rule"]["bill_category"], "opt_bill_wages")
+        self.assertEqual(allowed["rule"]["category"], "食材成本")
+        listed = [rule for rule in self.service.list_name_rules(P, "shop")["rules"]
+                  if rule["item"] == "滤网" and rule["state"] == "confirmed"]
+        self.assertEqual([(rule["category"], rule["bill_category"]) for rule in listed],
+                         [("食材成本", "opt_bill_wages")])
 
     def test_rules_are_shared_across_agents_and_a_reopened_database(self):
         path = self.store.path
@@ -337,8 +346,11 @@ class NameRuleHttpTests(http_contract.AgentHttpContractTests):
         self.assertTrue(policy["server_owned"])
         self.assertFalse(policy["history_or_ai_in_mvp"])
         self.assertFalse(policy["keyword_matching"])
-        self.assertEqual(policy["bill_field_key"], "cf_bill_category")
-        self.assertIn("opt_bill_wages", {item["bill_category"] for item in policy["legal_pairs"]})
+        self.assertEqual(policy["bill_field_ids"], ["cf_bill_category"])
+        self.assertIn("bill_category", policy["bill_field_keys"])
+        self.assertEqual(policy["bill_pairs"], "workspace_options_and_stored_entries")
+        self.assertIn("GET /v1/name-rules", policy["legal_pairs"])
+        self.assertNotIn("opt_bill_ingredients", policy["legal_pairs"])
         self.assertEqual(caps["operations"]["upsert_name_rule"]["path"], "/v1/name-rules")
         self.assertEqual(caps["operations"]["list_name_rules"]["method"], "GET")
         entry_schema = caps["agent_policy"]["input_preparation"]["structured_schema"]["properties"]["entries"]["items"]
@@ -369,6 +381,177 @@ class NameRuleHttpTests(http_contract.AgentHttpContractTests):
         self.assertEqual(status, 400)
         self.assertEqual(body["error"]["code"], "invalid_option")
         self.assertNotEqual(status, 500)
+
+
+class ProductionBillFieldTests(unittest.TestCase):
+    """Mirror the live field: id cf_bill_category, key bill_category, no opt_bill_ingredients."""
+
+    OPTIONS = (
+        ("opt_bill_purchase", "进货支出"),
+        ("opt_bill_wages", "员工工资"),
+        ("opt_bill_equipment", "办公设备"),
+        ("opt_bill_packaging", "包装耗材"),
+        ("opt_bill_utilities", "水电煤气"),
+        ("opt_bill_misc", "运营杂费"),
+        ("opt_bill_tax_filing", "做账报税"),
+        ("opt_bill_promotion", "平台推广"),
+    )
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.db = Path(tmp.name) / "production.db"
+        self.store = SqliteStore(str(self.db))
+        self.addCleanup(self.store.close)
+        self.store.ensure_shop("shop", "生产店", owner_id="owner", profile_id="restaurant")
+        self._install_bill_field()
+        self.history_id = self._seed_history()
+        self.service = AgentService(self.store)
+
+    def _install_bill_field(self):
+        from engine.custom_fields import display_identity
+        from engine.model import now_iso
+        created = now_iso()
+        scopes = json.dumps([{"record_type": "entry", "categories": ["其他支出"]}],
+                            ensure_ascii=False)
+        self.store.conn.execute(
+            """INSERT INTO custom_field(
+                id, shop_id, key, display_name, name_identity, value_type, scopes,
+                required, unit, enabled, revision, created_at, updated_at)
+               VALUES('cf_bill_category','shop','bill_category','账单分类',?,?,?,0,NULL,1,1,?,?)""",
+            (display_identity("账单分类"), "enum", scopes, created, created))
+        for position, (option_id, name) in enumerate(self.OPTIONS):
+            self.store.conn.execute(
+                """INSERT INTO custom_field_option(
+                    id, shop_id, field_id, display_name, name_identity, enabled,
+                    position, created_at, updated_at)
+                   VALUES(?,?,?,?,?,1,?,?,?)""",
+                (option_id, "shop", "cf_bill_category", name, display_identity(name),
+                 position, created, created))
+        self.store.conn.execute(
+            "INSERT INTO custom_field_config(shop_id, version, updated_at) VALUES('shop',4,?)",
+            (created,))
+        self.store.conn.commit()
+
+    def _seed_history(self):
+        entry_id = self.store.add_entries([{
+            "shop_id": "shop", "date": "2026-10-01", "type": "expense",
+            "category": "其他支出", "amount": 88, "item": "打印机",
+        }])[0]
+        self.store.conn.execute(
+            """INSERT INTO custom_entry_value(
+                shop_id, target_id, field_id, value_type, text_value, number_value,
+                option_id, date_value, source_quote, source_json, created_at, updated_at)
+               VALUES('shop',?,'cf_bill_category','enum',NULL,NULL,'opt_bill_equipment',
+                      NULL,NULL,'{}','2026-10-01T00:00:00','2026-10-01T00:00:00')""",
+            (entry_id,))
+        self.store.conn.commit()
+        return entry_id
+
+    def capture(self, request_id, text, **entry):
+        row = {
+            "date": "2026-11-08", "amount_basis": "gross", "granularity": "transaction",
+            "assertion": "actual", "source_quote": text,
+        }
+        row.update(entry)
+        return self.service.capture_text(
+            P, "shop", text, request_id, received_at=RECEIVED,
+            structured={"entries": [row], "sales": [], "observations": [], "leftovers": []})
+
+    def bill_of(self, entry_id):
+        values = CustomFieldStore(self.store).values_for("shop", "entry", entry_id)
+        return values[0]["value"] if values else None
+
+    def test_real_field_and_options_accept_live_combinations_without_rewriting_history(self):
+        listed = self.service.list_name_rules(P, "shop")
+        self.assertEqual(listed["bill_field_id"], "cf_bill_category")
+        self.assertEqual(listed["bill_field_key"], "bill_category")
+        purchase = next(item for item in listed["legal_pairs"]
+                        if item["bill_category"] == "opt_bill_purchase")
+        self.assertTrue(purchase["installed"])
+        self.assertTrue(purchase["enabled"])
+        self.assertEqual(purchase["display_name"], "进货支出")
+        self.assertEqual(purchase["source"], "option")
+        self.assertIsNone(purchase["category"])
+        equipment = next(item for item in listed["legal_pairs"]
+                         if item["bill_category"] == "opt_bill_equipment")
+        self.assertEqual((equipment["source"], equipment["type"], equipment["category"]),
+                         ("history", "expense", "其他支出"))
+        self.assertNotIn("opt_bill_ingredients",
+                         {item["bill_category"] for item in listed["legal_pairs"]})
+
+        with self.assertRaises(AgentError) as caught:
+            self.capture("guess-purchase", "进货 40", item="滤网", amount=40,
+                         bill_category="opt_bill_purchase")
+        self.assertEqual(caught.exception.code, "classification_required")
+
+        bought = self.capture(
+            "buy-filter", "滤网 40", item="滤网", amount=40,
+            type="purchase", category="食材成本", bill_category="opt_bill_purchase")
+        self.assertEqual(bought["status"], "parsed")
+        self.assertEqual((bought["entries"][0]["type"], bought["entries"][0]["category"]),
+                         ("purchase", "食材成本"))
+        self.assertEqual(self.bill_of(bought["entries"][0]["id"]), "opt_bill_purchase")
+
+        wages = self.capture(
+            "pay-laotang", "老唐 360", item="老唐", amount=360,
+            type="expense", category="人工", bill_category="opt_bill_wages")
+        self.assertEqual((wages["entries"][0]["category"], self.bill_of(wages["entries"][0]["id"])),
+                         ("人工", "opt_bill_wages"))
+
+        supplies = self.capture(
+            "buy-boxes", "纸箱 20", item="纸箱", amount=20,
+            type="expense", category="其他支出", bill_category="opt_bill_packaging")
+        self.assertEqual((supplies["entries"][0]["category"],
+                          self.bill_of(supplies["entries"][0]["id"])),
+                         ("其他支出", "opt_bill_packaging"))
+
+        filled = self.capture(
+            "another-printer", "另一台打印机 90", item="另一台打印机", amount=90,
+            bill_category="opt_bill_equipment")
+        self.assertEqual((filled["entries"][0]["type"], filled["entries"][0]["category"]),
+                         ("expense", "其他支出"))
+        self.assertEqual(self.bill_of(filled["entries"][0]["id"]), "opt_bill_equipment")
+        self.assertEqual(filled["classification"]["entries"][0]["source"], "explicit")
+
+        self.assertEqual(
+            (self.store.get_entry(self.history_id)["category"],
+             self.store.get_entry(self.history_id)["amount"],
+             self.bill_of(self.history_id)),
+            ("其他支出", 88, "opt_bill_equipment"))
+
+    def test_bill_field_is_found_by_key_when_the_id_is_generated(self):
+        from engine.custom_fields import display_identity
+        from engine.model import now_iso
+        self.store.ensure_shop("other", "另一店", owner_id="owner", profile_id="restaurant")
+        created = now_iso()
+        self.store.conn.execute(
+            """INSERT INTO custom_field(
+                id, shop_id, key, display_name, name_identity, value_type, scopes,
+                required, unit, enabled, revision, created_at, updated_at)
+               VALUES('cf_generated','other','bill_category','账单分类',?,'enum',?,0,NULL,1,1,?,?)""",
+            (display_identity("账单分类"),
+             json.dumps([{"record_type": "entry"}], ensure_ascii=False), created, created))
+        self.store.conn.execute(
+            """INSERT INTO custom_field_option(
+                id, shop_id, field_id, display_name, name_identity, enabled,
+                position, created_at, updated_at)
+               VALUES('opt_bill_stock','other','cf_generated','进货支出',?,1,0,?,?)""",
+            (display_identity("进货支出"), created, created))
+        self.store.conn.commit()
+        field = NameRuleStore(self.store).bill_field("other")
+        self.assertEqual((field["field_id"], field["key"]), ("cf_generated", "bill_category"))
+        saved = self.service.capture_text(
+            P, "other", "滤网 40", "other-shop-buy", received_at=RECEIVED,
+            structured={"entries": [{
+                "date": "2026-11-08", "item": "滤网", "amount": 40,
+                "type": "purchase", "category": "食材成本", "bill_category": "opt_bill_stock",
+                "amount_basis": "gross", "granularity": "transaction",
+                "assertion": "actual", "source_quote": "滤网 40",
+            }], "sales": [], "observations": [], "leftovers": []})
+        self.assertEqual(saved["entries"][0]["category"], "食材成本")
+        self.assertEqual(CustomFieldStore(self.store).values_for(
+            "other", "entry", saved["entries"][0]["id"])[0]["value"], "opt_bill_stock")
 
 
 if __name__ == "__main__":
