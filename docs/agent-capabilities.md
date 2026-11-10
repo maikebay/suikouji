@@ -131,11 +131,41 @@ Agent 整理时应当：
 
 `GET /v1/timeline` 仍是一条原话一个条目；`types` 仅可省略或单值 `thought`，后者筛选含随想的原话，混合原话仍含账目预览。它沿用 capture 事件时间和旧分页游标，日期含义不同于随想列表。将上一页 `next_before` 三项以 `|` 连接后原样回传；空值、重复、缺段、多段或日期/时间无效均返回 `400 invalid_cursor`。`projection_counts.thoughts` 是总数；`thought_preview` 最多3条、每条正文最多120字符，完整内容需随想列表或 `GET /v1/captures/{id}`。时间线关键词纳入随想标题、正文及标签。有原有领域行时沿用这些行的事件日期算法，纯随想才取记录日最大值，正文的未来时间不改变财务事件时间。
 
-随想与标签在同一本数据库的独立 `thoughts/thought_tags` 中保存，经 `capture_id` 关联原话。要查南瓜进货仍使用账目查询，不能宣称同标签已关联账目；没有独立随想创建、编辑、删除或撤销接口。
+随想与标签在同一本数据库的独立 `thoughts/thought_tags` 中保存，经 `capture_id` 关联原话。要查南瓜进货使用 `GET /v1/entries?q=南瓜`，由数据库返回匹配账目和合计，不能宣称同标签已关联账目，也不要先拉出全部账目再自行筛选；没有独立随想创建、编辑、删除或撤销接口。
+
+## 账目关键词查询
+
+能力项 `ledger.query` 为 `available` 时，查找某一笔或某个名称先读 `GET /v1/capabilities` 的 `agent_policy.entry_queries` 和 `agent_policy.user_presentation.query_strategy`，再调用：
+
+`GET /v1/entries?workspace_id={当前账本}&q={名称}`
+
+| 参数 | 约定 |
+| --- | --- |
+| `workspace_id` | 必填，只能访问认证主体有权访问的工作空间 |
+| `q` | 可选，最多 200 字符。只匹配账目名称 `item`，Unicode casefold 后的字面子串，与随想 `q` 同一类匹配；空串不限制，不裁去关键词空白。不搜索分类、备注、原文或随想，不执行正则或 SQL |
+| `start` / `end` | 可选。省略表示不限日期；传入时按账目 `date` 闭区间，开始晚于结束则拒绝 |
+| `type` | 可选，与已保存类型精确匹配 |
+| `category` | 可选，与已保存分类精确匹配，区分大小写 |
+
+账本在数据库里。筛选、笔数、金额合计和分年汇总都在数据库完成，一次响应同时返回：
+
+- `entries`：匹配的未作废明细，按日期排序。
+- `summary.count` / `summary.total`：匹配笔数和金额之和。`total` 是这些账目的金额相加，不是月报里的收支差额，也不是去重后的营业额。
+- `summary.by_year`：按公历年分组的笔数和金额，例如 2025 与 2026 各自一笔。
+- `summary.by_type`、`summary.by_category`：同一条件下按类型、分类分组。
+- `filters`：这次实际使用的条件。
+
+查找具体一笔时，先调用这个带条件的接口，先把匹配明细、合计和分年金额告诉用户。不要先取出大量账目再让模型逐条过滤，那会又慢又浪费额度。也不要默认再把全部分类、相同金额的其他账和随想交叉核对一遍。已作废账目不进入明细，也不进入合计。
+
+未知参数、重复参数、空的日期/类型/分类，或超过 200 字的关键词，返回 `400 invalid_query`。`GET /v1/summary` 不接受 `q` 或 `category`；把关键词交给月报不会得到筛选后的合计。
+
+整月或整段收支报表仍用 `GET /v1/summary`，并沿用下文的报表口径。关键词查询不能用来猜测名称归类，归类仍读 `GET /v1/name-rules`。
 
 ## 面向用户的进度和报表
 
 `agent_policy.user_presentation` 要求调用方把接口术语翻译成业务内容。查询前说明实际选定的账本、时间和范围，例如：“正在整理糖水铺10月的营业收入、进货支出和各项费用，并核对各商品销量。”范围还没确定就先明确范围，不把 `entries / sales / summary` 当进度说明，不声称尚未执行的查询已完成。
+
+查某一笔或某个名称时，先按 `user_presentation.query_strategy` 调用带 `q` 和时间、类型、分类的 `GET /v1/entries`，先报告返回的匹配明细和合计。不要把账目全部取回来再逐条过滤，也不要把全部分类、相同金额和随想的交叉核对当作默认做法。下面的报表结构只用于整月或整段收支报告。
 
 报表按“账本与统计时间 → 收支概览 → 主要支出 → 商品销售 → 待补充信息”组织，只展示有依据的数据：
 
@@ -171,6 +201,8 @@ Agent 整理时应当：
 
 原生 iLink worker 不自动发送此欢迎词或处理查询对话。介绍不承诺库存/剩料核算、任务提醒、随想编辑、任意改名、标签别名或固定报表；错账可调用 `ledger.void`（`POST /v1/entries/{id}/void`）软作废并保留审计，不物理删除；按能力接口的实际状态调整。
 
+安装后查询账目的约定不依赖某一次聊天记忆。新 Agent 只读 `GET /v1/capabilities` 时，按 `agent_policy.onboarding.guidance`、`agent_policy.entry_queries` 和 `agent_policy.user_presentation.query_strategy` 执行：查具体一笔先用 `GET /v1/entries` 的关键词、时间、类型和分类，在数据库里筛出明细和合计后先报告这些结果；不要拉全量让模型逐条过滤，也不要默认交叉核对全部分类、相同金额和随想。整月报表仍用 `GET /v1/summary`。
+
 ## 账目作废（软作废）
 
 能力项 `ledger.void` 为 `available` 时，外部 Agent 可在用户确认后调用：
@@ -193,7 +225,7 @@ Agent 整理时应当：
 
 ## 名称规则（服务端归类）
 
-能力项 `classification.rules` 为 `available` 时，分类规则属于工作空间，不属于某个对话或某个 Agent。新 Agent 没有聊天记录也能用：先读 `GET /v1/capabilities` 的 `agent_policy.input_preparation.classification`，再读 `GET /v1/name-rules`。不要扫描 `GET /v1/entries` 来猜名称归类，本版也不使用历史频率或模型猜测。
+能力项 `classification.rules` 为 `available` 时，分类规则属于工作空间，不属于某个对话或某个 Agent。新 Agent 没有聊天记录也能用：先读 `GET /v1/capabilities` 的 `agent_policy.input_preparation.classification`，再读 `GET /v1/name-rules`。不要扫描 `GET /v1/entries` 来猜名称归类，本版也不使用历史频率或模型猜测。关键词查询只用于按名称找回已入账的明细和合计，不能用来猜测或新建名称规则。
 
 匹配键是账目 `item` 的 Unicode NFC，再去掉首尾空白，区分大小写，必须整段相等。`老唐` 与 ` 老唐 ` 是同一条规则，`老 唐` 不是。
 

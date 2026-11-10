@@ -148,22 +148,51 @@ paths:
   /v1/summary:
     get:
       operationId: getSummary
+      description: |
+        整月或全期收支报表，沿用原有去重营业额、采购、费用和收支差额口径。
+        不接受 q 或 category；查找某一名称请用 GET /v1/entries，
+        那次响应已经包含匹配明细和数据库合计。
       parameters:
         - {$ref: '#/components/parameters/WorkspaceId'}
         - {name: month, in: query, schema: {type: string, pattern: '^[0-9]{4}-[0-9]{2}$'}}
       responses:
         '200': {description: Financial summary based on ledger entries}
+        '400':
+          description: invalid_query when q or category is supplied; use GET /v1/entries for keyword lookup
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         default: {$ref: '#/components/responses/Error'}
   /v1/entries:
     get:
       operationId: listEntries
+      description: |
+        在数据库中按条件筛选未作废账目，并在同一次响应里返回匹配明细和合计。
+        q 与 GET /v1/thoughts 的 q 一样，是 Unicode casefold 后的字面子串，不是正则或 SQL；
+        账目查询只匹配名称 item，不搜索分类、备注、原文或随想。空 q 表示不按名称限制。
+        start/end 为账目 date 的闭区间，可省略。type、category 为精确匹配。
+        summary.count、summary.total 以及 by_year、by_type、by_category 都由数据库聚合，
+        与明细使用同一筛选条件。total 是匹配账目金额之和，不是月报收支差额。
+        未知或重复参数、空的 start/end/type/category、超过 200 字的 q 返回 400 invalid_query。
+        查找具体一笔时使用本接口，先报告 entries 和 summary；整月报表仍用 GET /v1/summary。
       parameters:
         - {$ref: '#/components/parameters/WorkspaceId'}
+        - {$ref: '#/components/parameters/EntryQuery'}
         - {$ref: '#/components/parameters/Start'}
         - {$ref: '#/components/parameters/End'}
-        - {name: type, in: query, schema: {type: string}}
+        - {name: type, in: query, description: 与已保存类型精确匹配；省略表示不限, schema: {type: string, minLength: 1, maxLength: 32}}
+        - {name: category, in: query, description: 与已保存分类精确匹配，区分大小写；省略表示不限, schema: {type: string, minLength: 1, maxLength: 100}}
       responses:
-        '200': {description: Active (non-voided) entries by default}
+        '200':
+          description: Matching active entries and the database aggregate for the same filter
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EntryQueryResponse'}
+        '400':
+          description: invalid_query or invalid_range
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
         default: {$ref: '#/components/responses/Error'}
   /v1/entries/{entry_id}/void:
     post:
@@ -435,6 +464,11 @@ components:
       name: q
       in: query
       description: 标题/正文按 Unicode casefold 后字面子串匹配；空串不限制；不裁去关键词空白
+      schema: {type: string, maxLength: 200, default: ''}
+    EntryQuery:
+      name: q
+      in: query
+      description: 账目名称 item 按 Unicode casefold 后字面子串匹配；空串不限制；不裁去关键词空白；不搜索分类、备注或随想
       schema: {type: string, maxLength: 200, default: ''}
     ThoughtPageSize:
       name: page_size
@@ -785,6 +819,67 @@ components:
           type: array
           description: Original correction history when present, preserved on request replay
           items: {type: object}
+    EntryAmountGroup:
+      type: object
+      required: [count, total]
+      properties:
+        count: {type: integer, minimum: 0}
+        total: {type: number, description: 该组匹配账目 amount 之和，人民币}
+    EntryQueryResponse:
+      type: object
+      required: [entries, summary, filters]
+      description: |
+        同一次数据库查询的明细和合计。summary 的分组与 entries 使用同一 WHERE，
+        已作废行不出现在任一侧。total 不是 GET /v1/summary 的收支差额。
+      properties:
+        entries:
+          type: array
+          description: 匹配的未作废账目，按 date、created_at 排序
+          items: {type: object}
+        summary:
+          type: object
+          required: [count, total, by_year, by_type, by_category]
+          properties:
+            count: {type: integer, minimum: 0, description: 数据库 COUNT}
+            total: {type: number, description: 数据库 SUM(amount)，匹配账目金额之和}
+            by_year:
+              type: array
+              description: 按账目 date 的公历年分组，数据库 GROUP BY
+              items:
+                allOf:
+                  - {$ref: '#/components/schemas/EntryAmountGroup'}
+                  - type: object
+                    required: [year]
+                    properties:
+                      year: {type: string, pattern: '^[0-9]{4}$'}
+            by_type:
+              type: array
+              items:
+                allOf:
+                  - {$ref: '#/components/schemas/EntryAmountGroup'}
+                  - type: object
+                    required: [type]
+                    properties:
+                      type: {type: string}
+            by_category:
+              type: array
+              items:
+                allOf:
+                  - {$ref: '#/components/schemas/EntryAmountGroup'}
+                  - type: object
+                    required: [category]
+                    properties:
+                      category: {type: string}
+        filters:
+          type: object
+          required: [q, start, end, type, category]
+          description: 调用方传入的条件；省略的日期、类型、分类为 null，空 q 表示不按名称限制
+          properties:
+            q: {type: string, maxLength: 200}
+            start: {type: string, nullable: true}
+            end: {type: string, nullable: true}
+            type: {type: string, nullable: true}
+            category: {type: string, nullable: true}
     VoidEntryRequest:
       type: object
       required: [workspace_id, request_id]

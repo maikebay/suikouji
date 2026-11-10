@@ -284,9 +284,25 @@ class DemoHandler(BaseHTTPRequestHandler):
                 fields["before"] = tuple(before_values[0].split("|"))
             return self._send(200, service.timeline(principal, workspace, **fields))
         if path == "/v1/summary":
+            params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            if "q" in params or "category" in params:
+                raise AgentError(
+                    "invalid_query",
+                    "整月报表不接受关键词或分类。查找具体账目请用 GET /v1/entries，"
+                    "由数据库筛选并同时返回明细和合计。")
             return self._send(200, {"summary": service.summary(principal, workspace, query.get("month"))})
         if path == "/v1/entries":
-            return self._send(200, {"entries": service.entries(principal, workspace, query.get("start"), query.get("end"), query.get("type"))})
+            params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            allowed = {"workspace_id", "start", "end", "type", "category", "q"}
+            if params.keys() - allowed or any(len(values) != 1 for values in params.values()):
+                raise AgentError("invalid_query", "账目查询含未支持或重复的参数")
+            fields = {key: values[0] for key, values in params.items() if key != "workspace_id"}
+            for key in ("start", "end", "type", "category"):
+                if key in fields and fields[key] == "":
+                    raise AgentError("invalid_query", "账目查询的日期、类型或分类不能为空")
+            return self._send(200, service.query_entries(
+                principal, workspace, fields.get("start"), fields.get("end"),
+                fields.get("type"), fields.get("category"), fields.get("q", "")))
         if path == "/v1/sales":
             return self._send(200, {"sales": service.sales(principal, workspace, query.get("start"), query.get("end"))})
         if path == "/v1/observations":
