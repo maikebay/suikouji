@@ -68,8 +68,15 @@ class AgentService:
             "capture_text": {"method": "POST", "path": "/v1/captures", "confirmation": "ambiguous"},
             "get_capture": {"method": "GET", "path": "/v1/captures/{capture_id}"},
             "list_timeline": {"method": "GET", "path": "/v1/timeline"},
-            "get_summary": {"method": "GET", "path": "/v1/summary"},
-            "list_entries": {"method": "GET", "path": "/v1/entries"},
+            "get_summary": {
+                "method": "GET", "path": "/v1/summary",
+                "purpose": "full_period_financial_report", "accepts_keyword": False,
+            },
+            "list_entries": {
+                "method": "GET", "path": "/v1/entries",
+                "query": ["workspace_id", "q", "start", "end", "type", "category"],
+                "returns": ["entries", "summary", "filters"],
+            },
             "void_entry": {"method": "POST", "path": "/v1/entries/{entry_id}/void",
                            "confirmation": "required"},
             "list_sales": {"method": "GET", "path": "/v1/sales"},
@@ -634,10 +641,34 @@ class AgentService:
             start, end = "0000", "9999"
         return self.store.summary(workspace_id, start, end)
 
-    def entries(self, principal: Principal, workspace_id: str, start=None, end=None, type_=None) -> list:
-        self.workspace(principal, workspace_id)
+    def _entry_filters(self, start, end, type_, category, q):
         start, end = self._bounds(start, end)
-        return self.store.list_entries(workspace_id, start, end, type_)
+        if type_ is not None and (not isinstance(type_, str) or not type_ or len(type_) > 32):
+            raise AgentError("invalid_query", "账目类型不正确")
+        if category is not None:
+            if not isinstance(category, str) or not category or len(category) > 100:
+                raise AgentError("invalid_query", "分类筛选不正确")
+            self._check_unicode(category, "invalid_query")
+        if not isinstance(q, str) or len(q) > 200:
+            raise AgentError("invalid_query", "关键词最多 200 个字符")
+        self._check_unicode(q, "invalid_query")
+        return start, end
+
+    def query_entries(self, principal: Principal, workspace_id: str, start=None, end=None,
+                      type_=None, category=None, q="") -> dict:
+        """按关键词、时间、类型和分类在数据库中筛选，并带回同一条件的合计。"""
+        self.workspace(principal, workspace_id)
+        requested = {"q": q, "start": start, "end": end, "type": type_, "category": category}
+        start, end = self._entry_filters(start, end, type_, category, q)
+        result = self.store.query_entries(
+            workspace_id, start, end, type_, category=category, q=q)
+        result["filters"] = requested
+        return result
+
+    def entries(self, principal: Principal, workspace_id: str, start=None, end=None,
+                type_=None, category=None, q="") -> list:
+        return self.query_entries(
+            principal, workspace_id, start, end, type_, category, q)["entries"]
 
     def void_entry(self, principal: Principal, workspace_id: str, entry_id: str,
                    request_id: str, reason=None) -> dict:

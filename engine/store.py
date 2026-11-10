@@ -924,7 +924,8 @@ class Store(ABC):
 
     @abstractmethod
     def list_entries(self, shop_id: str, start: str, end: str,
-                     type_: str | None = None, *, include_voided: bool = False) -> list: ...
+                     type_: str | None = None, *, include_voided: bool = False,
+                     category: str | None = None, q: str = "") -> list: ...
 
     @abstractmethod
     def get_entry(self, entry_id: str) -> dict | None: ...
@@ -1156,6 +1157,25 @@ class Store(ABC):
     @abstractmethod
     def agent_import_preview_consume(self, token: str, principal_id: str,
                                      workspace_id: str, request_id: str) -> bool: ...
+
+
+def _entry_conditions(shop_id, start, end, type_=None, *, category=None, q="",
+                      include_voided=False):
+    """账目筛选只拼固定子句，条件值全部走参数。关键词是名称的字面匹配，不是 SQL。"""
+    clauses = ["shop_id=?", "date>=?", "date<=?"]
+    args = [shop_id, start, end]
+    if type_:
+        clauses.append("type=?")
+        args.append(type_)
+    if category:
+        clauses.append("category=?")
+        args.append(category)
+    if q:
+        clauses.append("instr(unicode_casefold(item), ?) > 0")
+        args.append(q.casefold())
+    if not include_voided:
+        clauses.append("voided_at IS NULL")
+    return " AND ".join(clauses), args
 
 
 class SqliteStore(Store):
@@ -1434,16 +1454,43 @@ class SqliteStore(Store):
                 ids.append(eid)
         return ids
 
-    def list_entries(self, shop_id, start, end, type_=None, *, include_voided=False):
-        sql = ("SELECT * FROM entry WHERE shop_id=? AND date>=? AND date<=?")
-        args = [shop_id, start, end]
-        if type_:
-            sql += " AND type=?"
-            args.append(type_)
-        if not include_voided:
-            sql += " AND voided_at IS NULL"
-        sql += " ORDER BY date, created_at"
-        return self._rows(self.conn.execute(sql, args))
+    def list_entries(self, shop_id, start, end, type_=None, *, include_voided=False,
+                     category=None, q=""):
+        where, args = _entry_conditions(
+            shop_id, start, end, type_, category=category, q=q, include_voided=include_voided)
+        return self._rows(self.conn.execute(
+            f"SELECT * FROM entry WHERE {where} ORDER BY date, created_at", args))
+
+    def query_entries(self, shop_id, start, end, type_=None, *, category=None, q=""):
+        """筛选与合计都在数据库里完成，返回同一条件下的明细和汇总。"""
+        where, args = _entry_conditions(
+            shop_id, start, end, type_, category=category, q=q, include_voided=False)
+        entries = self._rows(self.conn.execute(
+            f"SELECT * FROM entry WHERE {where} ORDER BY date, created_at", args))
+        total = self.conn.execute(
+            f"SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total FROM entry WHERE {where}",
+            args).fetchone()
+        grouped = {
+            "by_year": (
+                "substr(date, 1, 4) AS year", "substr(date, 1, 4)", "year",
+            ),
+            "by_type": ("type", "type", "type"),
+            "by_category": ("category", "category", "category"),
+        }
+        summary = {
+            "count": int(total["count"]),
+            "total": round2(total["total"]),
+        }
+        for key, (select, group, label) in grouped.items():
+            rows = self.conn.execute(
+                f"""SELECT {select}, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total
+                    FROM entry WHERE {where} GROUP BY {group} ORDER BY {group}""",
+                args)
+            summary[key] = [
+                {label: row[label], "count": int(row["count"]), "total": round2(row["total"])}
+                for row in rows
+            ]
+        return {"entries": entries, "summary": summary}
 
     def get_entry(self, entry_id):
         return self._row(self.conn.execute(
