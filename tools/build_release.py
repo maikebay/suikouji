@@ -21,10 +21,11 @@ FILES = (
     "engine/capabilities.py", "engine/cli.py", "engine/cost.py", "engine/custom_fields.py", "engine/deployment.py",
     "engine/importer.py", "engine/model.py", "engine/observe.py", "engine/parser.py",
     "engine/profile.py", "engine/reconcile.py", "engine/report.py", "engine/review.py",
-    "engine/runtime.py", "engine/sheet.py", "engine/store.py", "engine/thoughts.py", "engine/web.py",
+    "engine/runtime.py", "engine/sheet.py", "engine/store.py", "engine/thoughts.py", "engine/usage_guide.py", "engine/web.py",
     "channel/__init__.py", "channel/aes.py", "channel/bot.py", "channel/ilink.py",
     "web/demo.html", "deploy/README.md", "deploy/.env.example", "deploy/compose.env.example",
-    "deploy/BOT_DEPLOY.md", "docs/openapi.yaml", "docs/agent-capabilities.md", "docs/report-output-design.md",
+    "deploy/BOT_DEPLOY.md", "docs/openapi.yaml", "docs/agent-capabilities.md",
+    "docs/agent-usage-guide.md", "docs/report-output-design.md",
     "docs/thoughts-release-verification.md",
     "docs/accounting-v1.md", "docs/review-and-correction.md", "docs/parser-boundaries.md",
     "docs/ilink-protocol-notes.md", "docs/adr/0001-legacy-shop-as-workspace.md",
@@ -39,7 +40,7 @@ FILES = (
     "tests/test_release_package.py", "tests/test_review.py", "tests/test_runtime_backup.py",
     "tests/test_runtime_lifecycle.py", "tests/test_schema_readiness.py", "tests/test_web.py",
     "tests/test_thoughts_agent.py", "tests/test_thoughts_store.py", "tests/test_thoughts_native.py",
-    "tests/test_thoughts_presentation.py", "tests/test_thoughts_upgrade.py",
+    "tests/test_thoughts_presentation.py", "tests/test_thoughts_upgrade.py", "tests/test_usage_guide.py",
     "tests/fixtures/schema-v1.sql", "tests/fixtures/schema-v5.sql",
 )
 

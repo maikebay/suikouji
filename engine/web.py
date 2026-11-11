@@ -311,6 +311,11 @@ class DemoHandler(BaseHTTPRequestHandler):
             return self._send(200, {"reviews": service.reviews(principal, workspace)})
         if path == "/v1/name-rules":
             return self._send(200, service.list_name_rules(principal, workspace))
+        if path == "/v1/usage-guide":
+            params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            if set(params) != {"workspace_id"} or len(params["workspace_id"]) != 1:
+                raise AgentError("invalid_query", "使用说明查询含未支持或重复的参数")
+            return self._send(200, service.get_usage_guide(principal, workspace))
         if path.startswith("/v1/captures/"):
             capture_id = path.rsplit("/", 1)[-1]
             return self._send(200, service.capture_detail(principal, workspace, capture_id))
@@ -374,6 +379,9 @@ class DemoHandler(BaseHTTPRequestHandler):
                 "raw_text", "rules_version") if key in payload}
             return self._send(200, service.upsert_name_rule(
                 principal, workspace, payload.get("request_id"), spec))
+        if path == "/v1/usage-guide":
+            return self._send(200, service.update_usage_guide_notes(
+                principal, workspace, payload.get("request_id"), payload))
         if path == "/v1/reviews":
             review = service.review(principal, workspace, payload.get("request_id"),
                                     payload.get("target_id"), payload.get("fields"), payload.get("reason"),
@@ -413,6 +421,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             "/v1/custom-field-values/backfill": "POST",
             "/v1/reviews": "GET, POST",
             "/v1/name-rules": "GET, POST",
+            "/v1/usage-guide": "GET, POST",
             "/v1/imports/preview": "POST", "/v1/imports/xlsx-preview": "POST",
             "/v1/imports/xlsx-commit": "POST", "/v1/imports/commit": "POST",
         }.get(path)

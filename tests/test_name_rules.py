@@ -79,7 +79,7 @@ class NameRuleTests(unittest.TestCase):
         return values[0]["value"] if values else None
 
     def test_schema_v9_is_ready(self):
-        self.assertEqual(SCHEMA_VERSION, 9)
+        self.assertEqual(SCHEMA_VERSION, 10)
         self.assertTrue(database_schema_ready(self.store.conn))
         self.assertEqual(self.confirmed["rules_version"], 1)
         listed = self.service.list_name_rules(P, "shop")
@@ -318,7 +318,8 @@ class NameRuleTests(unittest.TestCase):
                     "shop_id": "shop", "date": "2026-11-01", "type": "expense",
                     "category": "人工", "amount": 360, "item": "老唐",
                 }])[0]
-                for name in ("name_rule_audit", "name_rule", "name_rule_config"):
+                for name in ("name_rule_audit", "name_rule", "name_rule_config",
+                             "usage_guide_notes"):
                     store.conn.execute(f"DROP TABLE IF EXISTS {name}")
                 store.conn.execute("UPDATE meta SET value='8' WHERE key='schema_version'")
                 store.conn.commit()
@@ -327,7 +328,7 @@ class NameRuleTests(unittest.TestCase):
             original = source.read_bytes()
             result = migrate_database(str(source), str(destination))
             self.assertEqual(result["source_schema_version"], 8)
-            self.assertEqual(result["schema_version"], 9)
+            self.assertEqual(result["schema_version"], SCHEMA_VERSION)
             self.assertEqual(source.read_bytes(), original)
             with closing(sqlite3.connect(destination)) as conn:
                 self.assertTrue(database_schema_ready(conn))

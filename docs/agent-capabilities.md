@@ -1,6 +1,22 @@
 # Agent 能力契约
 
+刚连上时先读 [Agent 使用说明](agent-usage-guide.md)。那是按用户要办的事写的固定用法；本文件继续写字段、重试、导入和接口细节。现场以 `GET /v1/capabilities` 的 `agent.usage_guide` 和 `GET /v1/usage-guide` 为准。
+
 Agent 在处理用户原话前，先带 Bearer key 读取 `GET /v1/capabilities`，了解产品当前支持、规划中和明确不支持的能力。接口合同见 [OpenAPI](openapi.yaml)。本地 demo 的 `/api/capabilities` 继续兼容；它不提供 staging 接入所需的认证边界。
+
+## 使用说明怎么交给 Agent、之后怎么维护
+
+安装或连接完成后先读取这份固定使用说明。官方部分由产品提供、不能改。本店补充可由 Agent 在后续使用中继续维护。换 Agent 也读同一份。升级产品只更新官方部分。
+
+产品把这份说明放进 `GET /v1/capabilities`，并按工作空间用 `GET /v1/usage-guide` 返回「产品固定说明」加「本店补充」。Agent 不必把官方正文抄进数据库。新工作空间也会返回完整官方说明，本店补充为空。
+
+官方部分随产品版本发布，Agent 不能改、不能删。`POST /v1/usage-guide` 只接受 `notes` 和 `request_id`；请求里若带上官方段落、整份说明或版本号，返回 `400 official_guide_readonly`，不写入。
+
+本店补充由该工作空间的已授权 Agent 继续维护，写在同一份说明里，不是另写一套规则，也不能抵消官方规则。同一工作空间换一个 Agent，读到的仍是官方正文加上这家店的补充。`request_id` 在 principal、workspace、operation 下幂等，同号不同内容返回 409。补充最长 4000 个 Unicode 字符；空字符串表示清掉补充。
+
+产品升级只更新官方部分。本店补充留在 `usage_guide_notes`。schema v10 只增加这张补充表，不改历史金额、分类、名称规则或账目。
+
+字段级限制、重试、导入、schema 和 iLink 收取细节仍以本文其余部分和 OpenAPI 为准。
 
 ## 先由 Agent 整理口语，再调用工具
 
@@ -296,7 +312,7 @@ Agent 整理时应当：
 
 ## 当前基础
 
-schema v9 在 v8 账目软作废之上增加工作空间名称规则；v7 起含自定义字段，v6 起含独立 `thoughts` 和可索引 `thought_tags`。名称规则表与已有账目分开，迁移不改历史金额和分类。公开字段使用 `workspace_id`。profile 作为工作空间元数据和模块边界，REST 和 iLink Bot 共用 `AgentService`，工作空间必须属于服务端配置的 owner。
+schema v10 在 v9 名称规则之上增加工作空间使用说明补充表 `usage_guide_notes`，只存本店补充，不存官方正文。v9 增加名称规则；v8 起含账目软作废；v7 起含自定义字段；v6 起含独立 `thoughts` 和可索引 `thought_tags`。迁移不改历史金额、分类、名称规则或账目。公开字段使用 `workspace_id`。profile 作为工作空间元数据和模块边界，REST 和 iLink Bot 共用 `AgentService`，工作空间必须属于服务端配置的 owner。
 
 ## 写入与重试
 

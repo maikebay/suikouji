@@ -21,6 +21,9 @@ from pathlib import Path
 from .agent_normalization import persist_structured, validate_structured
 from .custom_fields import CustomFieldError, CustomFieldStore
 from .name_rules import NameRuleError, NameRuleStore
+from .usage_guide import (
+    MAX_NOTES, NOTES_WRITE_FIELDS, OFFICIAL_WRITE_FIELDS, UsageGuideStore, guide_document,
+)
 from .capabilities import product_capabilities
 from .importer import commit_import, plan_import
 from .model import month_range
@@ -65,6 +68,11 @@ class AgentService:
         contract = product_capabilities()
         contract["contract_version"] = "agent-1"
         contract["operations"] = {
+            "get_usage_guide": {"method": "GET", "path": "/v1/usage-guide"},
+            "update_usage_guide_notes": {
+                "method": "POST", "path": "/v1/usage-guide",
+                "writes": "workspace_notes_only", "official_readonly": True,
+            },
             "capture_text": {"method": "POST", "path": "/v1/captures", "confirmation": "ambiguous"},
             "get_capture": {"method": "GET", "path": "/v1/captures/{capture_id}"},
             "list_timeline": {"method": "GET", "path": "/v1/timeline"},
@@ -715,6 +723,63 @@ class AgentService:
     def reviews(self, principal: Principal, workspace_id: str) -> list:
         self.workspace(principal, workspace_id)
         return review_items(self.store, workspace_id)
+
+    def _usage_notes(self) -> UsageGuideStore:
+        return UsageGuideStore(self.store)
+
+    def get_usage_guide(self, principal: Principal, workspace_id: str) -> dict:
+        self.workspace(principal, workspace_id)
+        stored = self._usage_notes().read(workspace_id)
+        return guide_document(
+            workspace_id, stored["notes"], stored["updated_at"], stored["updated_by"])
+
+    def update_usage_guide_notes(self, principal: Principal, workspace_id: str,
+                                 request_id: str, body: dict) -> dict:
+        """只更新本店补充。官方段落来自产品，不接受写入。"""
+        self.workspace(principal, workspace_id)
+        request_id = self._request_id(request_id)
+        if not isinstance(body, dict):
+            raise AgentError("invalid_usage_guide", "使用说明补充必须是对象")
+        if OFFICIAL_WRITE_FIELDS & set(body):
+            raise AgentError(
+                "official_guide_readonly",
+                "产品固定说明不能改、不能删。只能维护本店补充 notes。")
+        unknown = set(body) - NOTES_WRITE_FIELDS
+        if unknown:
+            raise AgentError("invalid_usage_guide", "使用说明含有未允许的字段",
+                             details={"fields": sorted(unknown)})
+        if "notes" not in body or not isinstance(body["notes"], str):
+            raise AgentError("invalid_usage_guide", "本店补充 notes 必须是字符串")
+        notes = body["notes"]
+        self._check_unicode(notes, "invalid_usage_guide")
+        if "\x00" in notes:
+            raise AgentError("invalid_usage_guide", "本店补充含有无效的 Unicode 字符")
+        if len(notes) > MAX_NOTES:
+            raise AgentError("invalid_usage_guide",
+                             f"本店补充最多 {MAX_NOTES} 个字符")
+        payload = {"notes": notes}
+        with self.store.transaction():
+            cached, claim, _recovered = self._idempotent(
+                principal, workspace_id, "usage_guide_notes", request_id, payload)
+            if cached is not None:
+                return self._usage_guide_response(workspace_id, {**cached, "duplicate": True})
+            stored = self._usage_notes().write(workspace_id, notes, principal.id)
+            receipt = {
+                "notes": stored["notes"],
+                "updated_at": stored["updated_at"],
+                "updated_by": stored["updated_by"],
+                "duplicate": False,
+            }
+            self._finish(claim, receipt)
+        return self._usage_guide_response(workspace_id, receipt)
+
+    @staticmethod
+    def _usage_guide_response(workspace_id, receipt):
+        """官方段落每次从产品代码组装，不把正文固化进幂等缓存。"""
+        document = guide_document(
+            workspace_id, receipt["notes"], receipt.get("updated_at"), receipt.get("updated_by"))
+        document["duplicate"] = bool(receipt.get("duplicate"))
+        return document
 
     def list_name_rules(self, principal: Principal, workspace_id: str) -> dict:
         self.workspace(principal, workspace_id)

@@ -97,7 +97,7 @@ def initialize_database(env, *, allow_existing=False):
 
 
 def migrate_database(source: str, destination: str) -> dict:
-    """将完整 v5、v6、v7 或 v8 库备份到新路径后迁移副本；永不修改或覆盖源库。"""
+    """将完整 v5、v6、v7、v8 或 v9 库备份到新路径后迁移副本；永不修改或覆盖源库。"""
     source_path, destination_path = Path(source).absolute(), Path(destination).absolute()
     if source == ":memory:" or not source_path.is_file() or source_path.is_symlink():
         raise ValueError("迁移源必须是现有数据库文件")
@@ -114,12 +114,12 @@ def migrate_database(source: str, destination: str) -> dict:
         with closing(sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True)) as source_conn, \
                 closing(sqlite3.connect(temporary)) as target_conn:
             source_version = None
-            for version in (5, 6, 7, 8):
+            for version in (5, 6, 7, 8, 9):
                 if database_schema_ready(source_conn, expected_version=version):
                     source_version = version
                     break
             if source_version is None:
-                raise ValueError("迁移源必须是完整的 v5、v6、v7 或 v8 数据库")
+                raise ValueError("迁移源必须是完整的 v5、v6、v7、v8 或 v9 数据库")
             source_conn.backup(target_conn)
             target_conn.execute("PRAGMA foreign_keys=ON")
             migrate_to_current(target_conn)

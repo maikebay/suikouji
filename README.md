@@ -51,7 +51,7 @@ CLI与网页必须指定同一个数据库和店铺ID才会使用同一本账；
 
 JSON export包含随想与标签，但不是完整数据库备份，也不承诺JSON restore。完整恢复继续使用[SQLite backup/restore](deploy/README.md#备份与恢复)，保留原话、财务、随想、标签及控制表和完整回执；每次恢复到新文件，校验和演练后再考虑切换。
 
-当前基础架构保留旧 `shop_id` 作为兼容的工作空间标识，并在 `workspace_meta` 中记录 owner、行业 profile 和时区；原话增加 context、intent、routing_status、profile_id 元数据，但不改变旧账务语义。行业 profile 注册表见 `engine/profile.py`。外部 Agent 使用 Bearer 认证的 `/v1/capabilities`、`/v1/workspaces` 与 capture、修正、导入和查询接口，合同见 [OpenAPI](docs/openapi.yaml) 与 [Agent 能力契约](docs/agent-capabilities.md)。Agent 必须先读取能力契约：不支持的需求要主动说明并追问，信息不足时不得猜着入账。本地 demo 继续保留 `/api/*` 兼容接口；[staging 运行方式](deploy/README.md) 默认只开放 v1 与探针。
+当前基础架构保留旧 `shop_id` 作为兼容的工作空间标识，并在 `workspace_meta` 中记录 owner、行业 profile 和时区；原话增加 context、intent、routing_status、profile_id 元数据，但不改变旧账务语义。行业 profile 注册表见 `engine/profile.py`。外部 Agent 使用 Bearer 认证的 `/v1/capabilities`、`/v1/workspaces` 与 capture、修正、导入和查询接口，合同见 [OpenAPI](docs/openapi.yaml) 与 [Agent 能力契约](docs/agent-capabilities.md)。安装或连接完成后先读 [使用说明](docs/agent-usage-guide.md)（现场接口 `GET /v1/usage-guide`）：官方部分随产品固定，本店补充按工作空间维护。Agent 必须先读取能力契约：不支持的需求要主动说明并追问，信息不足时不得猜着入账。本地 demo 继续保留 `/api/*` 兼容接口；[staging 运行方式](deploy/README.md) 默认只开放 v1 与探针。
 
 当前阶段仍未实现个人微信直连、任务提醒、客如云/外卖平台直连或独立的个人复式账本；这些只能在能力契约中标为规划中，不能对用户伪装成已支持。
 
