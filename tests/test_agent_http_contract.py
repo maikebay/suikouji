@@ -254,6 +254,7 @@ class AgentHttpContractTests(unittest.TestCase):
             ("/v1/observations", {"GET"}, "GET"),
             ("/v1/reviews", {"GET", "POST"}, "GET, POST"),
             ("/v1/name-rules", {"GET", "POST"}, "GET, POST"),
+            ("/v1/usage-guide", {"GET", "POST"}, "GET, POST"),
             ("/v1/imports/preview", {"POST"}, "POST"),
             ("/v1/imports/commit", {"POST"}, "POST"),
         )

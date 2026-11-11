@@ -29,8 +29,8 @@ from .model import (
     round2,
 )
 
-SCHEMA_VERSION = 9
-HISTORICAL_SCHEMA_VERSIONS = (5, 6, 7, 8)
+SCHEMA_VERSION = 10
+HISTORICAL_SCHEMA_VERSIONS = (5, 6, 7, 8, 9)
 
 # Execute these statements inside the caller's transaction: executescript would
 # commit it before applying DDL, breaking copy migration and rollback guarantees.
@@ -383,6 +383,23 @@ def _create_name_rule_schema(conn):
     for statement in _NAME_RULE_SCHEMA:
         conn.execute(statement)
 
+
+# Workspace supplements only. Official usage text ships with the product, not in this table.
+_USAGE_GUIDE_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS usage_guide_notes (
+        shop_id TEXT PRIMARY KEY,
+        notes TEXT NOT NULL CHECK(length(notes) > 0 AND length(notes) <= 4000),
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        FOREIGN KEY(shop_id) REFERENCES shop(id)
+    )""",
+)
+
+
+def _create_usage_guide_schema(conn):
+    for statement in _USAGE_GUIDE_SCHEMA:
+        conn.execute(statement)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -670,6 +687,8 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
             "name_rule_audit": "id, shop_id, rule_id, action, actor, request_id, raw_text, "
                                "before_json, after_json, rules_version, created_at",
         })
+    if expected_version >= 10:
+        required["usage_guide_notes"] = "shop_id, notes, updated_at, updated_by"
     try:
         version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if not version or version[0] != str(expected_version):
@@ -729,6 +748,8 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                     "name_rule_config": {("shop_id",)},
                     "name_rule": {("id",), ("shop_id", "id"), ("shop_id", "item_identity", "state")},
                 })
+            if expected_version >= 10:
+                unique_keys["usage_guide_notes"] = {("shop_id",)}
             for table, expected in unique_keys.items():
                 actual = set()
                 for index in conn.execute(f"PRAGMA index_list({table})").fetchall():
@@ -783,6 +804,8 @@ def database_schema_ready(conn, *, expected_version=SCHEMA_VERSION) -> bool:
                     "name_rule": {(("shop", "shop_id", "id"),)},
                     "name_rule_audit": {(("shop", "shop_id", "id"),)},
                 })
+            if expected_version >= 10:
+                foreign_keys["usage_guide_notes"] = {(("shop", "shop_id", "id"),)}
             for table, expected in foreign_keys.items():
                 groups = {}
                 for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
@@ -870,6 +893,19 @@ def migrate_v8_to_v9(conn):
     _migrate_in_savepoint(conn, "name_rules_v9", 8, _apply_v9, 9)
 
 
+def _apply_v10(conn):
+    if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='usage_guide_notes'").fetchone():
+        raise ValueError("v9 数据库已有使用说明补充表，请核对迁移状态")
+    _create_usage_guide_schema(conn)
+    conn.execute("UPDATE meta SET value='10' WHERE key='schema_version'")
+
+
+def migrate_v9_to_v10(conn):
+    """为已校验的 v9 副本增加本店使用说明补充表。不改账目、分类或名称规则。"""
+    _migrate_in_savepoint(conn, "usage_guide_v10", 9, _apply_v10, 10)
+
+
 def migrate_to_current(conn):
     """按源版本逐级迁移。调用方必须先把源库只读复制到新目标。"""
     version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -887,6 +923,9 @@ def migrate_to_current(conn):
         current = 8
     if current == 8:
         migrate_v8_to_v9(conn)
+        current = 9
+    if current == 9:
+        migrate_v9_to_v10(conn)
         return
     if current == SCHEMA_VERSION and database_schema_ready(conn):
         return
@@ -1211,6 +1250,9 @@ class SqliteStore(Store):
             if database_schema_ready(self.conn, expected_version=8):
                 migrate_to_current(self.conn)
                 return
+            if database_schema_ready(self.conn, expected_version=9):
+                migrate_to_current(self.conn)
+                return
             existing_meta = self.conn.execute("SELECT name FROM sqlite_master WHERE name='meta'").fetchone()
             if existing_meta:
                 version = self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -1296,6 +1338,7 @@ class SqliteStore(Store):
             _create_custom_field_schema(self.conn)
             _apply_void_entry_columns(self.conn)
             _create_name_rule_schema(self.conn)
+            _create_usage_guide_schema(self.conn)
 
     def close(self) -> None:
         self.conn.close()
@@ -2575,7 +2618,8 @@ class SqliteStore(Store):
                   'custom_field_suggestion', 'custom_field_preview',
                   'custom_field_alias', 'custom_import_mapping',
                   'entry_void_audit',
-                  'name_rule_config', 'name_rule', 'name_rule_audit']
+                  'name_rule_config', 'name_rule', 'name_rule_audit',
+                  'usage_guide_notes']
         out = {"schema_version": SCHEMA_VERSION, "shop_id": shop_id, "tables": {}}
         for t in tables:
             if t == "shop":

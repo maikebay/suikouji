@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 
 from .name_rules import BILL_FIELD_IDS, BILL_FIELD_KEYS
 from .profile import list_profiles
+from .usage_guide import INSTALL_DELIVERY, usage_guide_policy
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,19 @@ class Capability:
 
 
 _CAPABILITIES = (
+    Capability(
+        "agent.usage_guide",
+        "available",
+        "产品固定使用说明。安装或连接后先读；官方部分只读，本店补充按工作空间维护",
+        "GET /v1/usage-guide；POST /v1/usage-guide 只提交 notes 与 request_id",
+        "官方说明不能改、不能删；本店补充由已授权 Agent 直接维护，不必请用户逐句确认",
+        ("安装或连接完成后先读取这份固定使用说明，再读能力说明，并确认账本",
+         "官方部分由产品提供，Agent 不能改、不能删，也不要抄进数据库",
+         "本店补充可由 Agent 在后续使用中继续维护，写在同一份说明里，不是另写一套规则",
+         "同一工作空间换 Agent 也读同一份：官方正文加该店补充",
+         "升级产品只更新官方部分，本店补充保留",
+         "字段级限制、重试、导入、schema 和 iLink 细节仍以能力契约和 OpenAPI 为准"),
+    ),
     Capability(
         "capture.text",
         "available",
@@ -644,11 +658,14 @@ def product_capabilities() -> dict:
                     "不伪造合并原话，不声称跨capture自动关联；财务修正须核对已有目标，不承诺撤销或随想编辑。"
                 ),
             },
+            "usage_guide": usage_guide_policy(),
             "onboarding": {
                 "audience": "external_agent",
                 "requires_capabilities": ["thought.capture", "thought.list"],
                 "builtin_worker_auto_welcome": False,
                 "ask_for_tags": False,
+                "read_usage_guide_first": True,
+                "usage_guide": INSTALL_DELIVERY,
                 "guidance": "先确认认证、已有工作空间及实际行业能力；已有店名和profile不重复问。"
                             "缺信息时最多问一两句账本叫法或主要生意，通过真实部署配置持久化；"
                             "没有配置能力须说明需要完成连接。不能因其他行业自动选择餐饮profile。"
@@ -657,7 +674,9 @@ def product_capabilities() -> dict:
                             "查具体一笔时先读 ledger.query：用 GET /v1/entries 的 q 以及日期、类型、分类，"
                             "在数据库里筛选并同时取回明细和合计，先报告这些结果；"
                             "不要拉全量让模型逐条过滤，也不要把全部分类、相同金额和随想的交叉核对当作默认做法。"
-                            "整月报表仍用 GET /v1/summary 和 report_policy。",
+                            "整月报表仍用 GET /v1/summary 和 report_policy。"
+                            + INSTALL_DELIVERY
+                            + "官方正文也在 agent_policy.usage_guide；本店补充只在 GET /v1/usage-guide。",
                 "introduction_template": (
                     "我是随口记，帮你用说话或打字记生意账，也把新品灵感和经营随想留在一起。"
                     "忙时可以记进货、开支和营业收入；想到新口味也随手记下，以后按时间或标签找回来。"

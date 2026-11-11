@@ -14,6 +14,7 @@ info:
     已完成请求仍校验 owner/workspace；后续 profile 变更或修正目标删除不阻止重放。
     JSON 请求体上限 32768 字节；CSV 本身最多 2000000 UTF-8 字节，HTTP 仍受请求体上限约束。
     名称规则自 schema v9 起由服务端按工作空间保存。v8 及更早的库经显式副本迁移升级，不改写历史账目。
+    schema v10 增加每个工作空间的使用说明补充。官方使用说明随产品发布、只读；POST /v1/usage-guide 只写本店补充。
     0.2.0-staging 使用 schema v6，新增独立生意随想；随想不计入财务汇总、不产生任务或提醒。
     structured 的四个旧数组仍必填，thoughts 可省略；新结构化解析版本为 agent-structured-2。
     新回执包含 thoughts，历史完整缓存原样重放，可能没有该字段；客户端须兼容缺省。
@@ -292,6 +293,44 @@ paths:
         '200': {description: Rule write result, including rules_version and audit}
         '400': {description: invalid_rule, invalid_option, illegal_classification, or classification_required}
         '409': {description: rules_version_conflict or idempotency_conflict}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/usage-guide:
+    get:
+      operationId: getUsageGuide
+      description: |
+        返回当前工作空间应遵循的一份使用说明：产品固定说明加上本店补充。
+        新工作空间也返回完整官方段落，补充为空，不必先把官方正文写入数据库。
+        官方段落只来自当前产品版本。升级产品会换成新的官方段落，本店补充仍留在该工作空间。
+      parameters: [{$ref: '#/components/parameters/WorkspaceId'}]
+      responses:
+        '200':
+          description: Official usage guide plus this workspace's supplements
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UsageGuide'}
+        '400': {description: workspace_required or invalid_query}
+        '403': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: updateUsageGuideNotes
+      description: |
+        只更新本店补充 notes。官方段落不能通过本接口改写或删除。
+        请求若包含 official、sections、guide、guide_version 等官方字段，返回 400 official_guide_readonly，且不写入。
+        request_id 在 principal、workspace、operation=usage_guide_notes 下幂等。
+        notes 为 0 到 4000 个 Unicode 字符；空字符串清除补充。同号不同内容返回 409。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UsageGuideNotesRequest'}
+      responses:
+        '200':
+          description: The guide after this notes write. duplicate is true when the same request is replayed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UsageGuideWriteResponse'}
+        '400': {description: official_guide_readonly or invalid_usage_guide}
+        '409': {description: idempotency_conflict or request_in_progress}
         default: {$ref: '#/components/responses/Error'}
   /v1/imports/preview:
     post:
@@ -904,6 +943,63 @@ components:
           type: string
           nullable: true
           description: New audit row id on first void; null when already voided or on replay without a new audit
+    UsageGuideSection:
+      type: object
+      required: [label, id, title, body]
+      properties:
+        label: {type: string, enum: ['产品固定说明']}
+        id: {type: string}
+        title: {type: string}
+        body: {type: string}
+    UsageGuide:
+      type: object
+      required: [workspace_id, guide_version, official_readonly, precedence, official, supplements, contract]
+      properties:
+        workspace_id: {type: string}
+        guide_version: {type: string, example: usage-guide-1}
+        official_readonly: {type: boolean, enum: [true]}
+        precedence: {type: string}
+        official:
+          type: object
+          required: [label, sections]
+          properties:
+            label: {type: string, enum: ['产品固定说明']}
+            sections:
+              type: array
+              items: {$ref: '#/components/schemas/UsageGuideSection'}
+        supplements:
+          type: object
+          required: [label, notes, updated_at, updated_by]
+          properties:
+            label: {type: string, enum: ['本店补充']}
+            notes: {type: string, maxLength: 4000}
+            updated_at: {type: string, nullable: true}
+            updated_by: {type: string, nullable: true, description: Principal id that last saved notes}
+        contract:
+          type: object
+          required: [capabilities, detail, openapi]
+          properties:
+            capabilities: {type: string}
+            detail: {type: string}
+            openapi: {type: string}
+    UsageGuideNotesRequest:
+      type: object
+      additionalProperties: false
+      required: [workspace_id, request_id, notes]
+      properties:
+        workspace_id: {type: string, minLength: 1}
+        request_id: {type: string, minLength: 1, maxLength: 100}
+        notes:
+          type: string
+          maxLength: 4000
+          description: Workspace supplement only. Empty string clears it. Official text is not a field.
+    UsageGuideWriteResponse:
+      allOf:
+        - {$ref: '#/components/schemas/UsageGuide'}
+        - type: object
+          required: [duplicate]
+          properties:
+            duplicate: {type: boolean}
     NameRuleRequest:
       type: object
       required: [workspace_id, request_id, scope, item]
